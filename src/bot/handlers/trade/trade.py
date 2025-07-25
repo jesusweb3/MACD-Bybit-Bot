@@ -8,11 +8,13 @@ from src.bot.keyboards.trade_menu import (
     get_active_trading_menu,
     get_statistics_menu,
     get_balance_menu,
-    get_back_to_trade_menu
+    get_back_to_trade_menu,
+    get_trade_history_menu
 )
 from ...utils.trade_utils import TradeBotUtils
 from src.utils.logger import logger
 from src.utils.config import config
+from src.database.database import db
 
 router = Router()
 
@@ -46,17 +48,11 @@ async def trade_menu(callback: CallbackQuery):
 
 @router.callback_query(F.data == "trade_strategy_blocked")
 async def strategy_blocked(callback: CallbackQuery):
-    """Обработка заблокированной кнопки стратегии"""
+    """Обработка заблокированной кнопки стратегии - только уведомление"""
     if not config.is_user_allowed(callback.from_user.id):
         return
 
-    blocked_text = TradeBotUtils.get_blocked_strategy_text()
-
-    await callback.message.edit_text(
-        blocked_text,
-        reply_markup=get_back_to_trade_menu(),
-        parse_mode='HTML'
-    )
+    # Просто показываем уведомление и НЕ меняем интерфейс
     await callback.answer("🔒 Завершите настройки для доступа к стратегиям", show_alert=True)
 
 
@@ -70,7 +66,8 @@ async def strategy_menu(callback: CallbackQuery):
     settings_info = TradeBotUtils.check_settings_completeness(callback.from_user.id)
 
     if not settings_info['complete']:
-        await strategy_blocked(callback)
+        # Если настройки не завершены - показываем уведомление и остаемся в меню
+        await callback.answer("🔒 Завершите настройки для доступа к стратегиям", show_alert=True)
         return
 
     strategy_text = TradeBotUtils.get_strategy_menu_text()
@@ -95,8 +92,18 @@ async def strategy_selected(callback: CallbackQuery):
     settings_info = TradeBotUtils.check_settings_completeness(callback.from_user.id)
 
     if not settings_info['complete']:
-        await strategy_blocked(callback)
+        await callback.answer("🔒 Завершите настройки для доступа к стратегиям", show_alert=True)
         return
+
+    # Специальная проверка для MACD Full - нужны одинаковые таймфреймы
+    if strategy_name == "macd_full":
+        user_settings = db.get_user_settings(callback.from_user.id)
+        entry_tf = user_settings.get('entry_timeframe') if user_settings else None
+        exit_tf = user_settings.get('exit_timeframe') if user_settings else None
+
+        if entry_tf != exit_tf:
+            await callback.answer("⚠️ Для MACD Full настройте одинаковые ТФ для входа и выхода", show_alert=True)
+            return
 
     # Генерируем текст подтверждения
     confirm_text = TradeBotUtils.get_strategy_confirm_text(strategy_name, callback.from_user.id)
@@ -163,44 +170,47 @@ async def trade_balance(callback: CallbackQuery):
     await callback.answer()
 
 
-@router.callback_query(F.data == "detailed_stats")
-async def detailed_stats(callback: CallbackQuery):
-    """Подробная статистика (заглушка)"""
-    if not config.is_user_allowed(callback.from_user.id):
-        return
-
-    await callback.message.edit_text(
-        "📊 <b>Подробная статистика</b>\n\n"
-        "🚧 <i>Раздел в разработке</i>\n\n"
-        "В будущем здесь будет:\n"
-        "• График P&L по времени\n"
-        "• Анализ по торговым парам\n"
-        "• Эффективность стратегий\n"
-        "• Детальная аналитика",
-        reply_markup=get_statistics_menu(),
-        parse_mode='HTML'
-    )
-    await callback.answer()
-
-
 @router.callback_query(F.data == "trade_history")
 async def trade_history(callback: CallbackQuery):
-    """История сделок (заглушка)"""
+    """История сделок"""
     if not config.is_user_allowed(callback.from_user.id):
         return
 
     await callback.message.edit_text(
         "📋 <b>История сделок</b>\n\n"
-        "🚧 <i>Раздел в разработке</i>\n\n"
+        "📝 <i>Сделок пока нет</i>\n\n"
+        "🚧 <i>Функционал в разработке</i>\n\n"
         "Здесь будет отображаться:\n"
         "• Все выполненные сделки\n"
         "• Детали каждой операции\n"
         "• Фильтры по датам\n"
         "• Экспорт данных",
-        reply_markup=get_statistics_menu(),
+        reply_markup=get_trade_history_menu(),
         parse_mode='HTML'
     )
     await callback.answer()
+
+
+@router.callback_query(F.data == "refresh_trade_history")
+async def refresh_trade_history(callback: CallbackQuery):
+    """Обновление истории сделок"""
+    if not config.is_user_allowed(callback.from_user.id):
+        return
+
+    await callback.answer("🔄 Обновление истории...")
+
+    await callback.message.edit_text(
+        "📋 <b>История сделок</b>\n\n"
+        "📝 <i>Сделок пока нет</i>\n\n"
+        "🚧 <i>Функционал в разработке</i>\n\n"
+        "Здесь будет отображаться:\n"
+        "• Все выполненные сделки\n"
+        "• Детали каждой операции\n"
+        "• Фильтры по датам\n"
+        "• Экспорт данных",
+        reply_markup=get_trade_history_menu(),
+        parse_mode='HTML'
+    )
 
 
 @router.callback_query(F.data == "refresh_balance")
@@ -219,47 +229,6 @@ async def refresh_balance(callback: CallbackQuery):
         reply_markup=get_balance_menu(),
         parse_mode='HTML'
     )
-
-
-@router.callback_query(F.data == "view_positions")
-async def view_positions(callback: CallbackQuery):
-    """Просмотр позиций (заглушка)"""
-    if not config.is_user_allowed(callback.from_user.id):
-        return
-
-    await callback.message.edit_text(
-        "📊 <b>Открытые позиции</b>\n\n"
-        "💼 <i>Открытых позиций нет</i>\n\n"
-        "🚧 <i>Функционал в разработке</i>\n\n"
-        "В будущем здесь будет:\n"
-        "• Список всех открытых позиций\n"
-        "• Текущий P&L по каждой\n"
-        "• Возможность ручного закрытия\n"
-        "• Изменение TP/SL",
-        reply_markup=get_balance_menu(),
-        parse_mode='HTML'
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data == "balance_history")
-async def balance_history(callback: CallbackQuery):
-    """История баланса (заглушка)"""
-    if not config.is_user_allowed(callback.from_user.id):
-        return
-
-    await callback.message.edit_text(
-        "📋 <b>История баланса</b>\n\n"
-        "🚧 <i>Раздел в разработке</i>\n\n"
-        "Здесь будет показана:\n"
-        "• История изменений баланса\n"
-        "• График роста/падения\n"
-        "• Привязка к сделкам\n"
-        "• Статистика по периодам",
-        reply_markup=get_balance_menu(),
-        parse_mode='HTML'
-    )
-    await callback.answer()
 
 
 # Универсальная заглушка для будущих callback'ов

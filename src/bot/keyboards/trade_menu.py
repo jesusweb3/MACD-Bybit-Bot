@@ -86,10 +86,9 @@ def get_active_trading_menu() -> InlineKeyboardMarkup:
 
 
 def get_statistics_menu() -> InlineKeyboardMarkup:
-    """Меню статистики"""
+    """Меню статистики - убрана кнопка подробной статистики"""
     keyboard = [
         [
-            InlineKeyboardButton(text="📈 Подробная статистика", callback_data="detailed_stats"),
             InlineKeyboardButton(text="📋 История сделок", callback_data="trade_history")
         ],
         [
@@ -103,15 +102,26 @@ def get_statistics_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
-def get_balance_menu() -> InlineKeyboardMarkup:
-    """Меню баланса"""
+def get_trade_history_menu() -> InlineKeyboardMarkup:
+    """Меню истории сделок - отдельное меню без дублирования кнопок"""
     keyboard = [
         [
-            InlineKeyboardButton(text="🔄 Обновить баланс", callback_data="refresh_balance"),
+            InlineKeyboardButton(text="🔄 Обновить историю", callback_data="refresh_trade_history")
         ],
         [
-            InlineKeyboardButton(text="📊 Позиции", callback_data="view_positions"),
-            InlineKeyboardButton(text="📋 История", callback_data="balance_history")
+            InlineKeyboardButton(text="📊 К статистике", callback_data="trade_statistics"),
+            InlineKeyboardButton(text="🔙 К торговле", callback_data="trade_menu")
+        ]
+    ]
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def get_balance_menu() -> InlineKeyboardMarkup:
+    """Меню баланса - только обновление и возврат"""
+    keyboard = [
+        [
+            InlineKeyboardButton(text="🔄 Обновить баланс", callback_data="refresh_balance")
         ],
         [
             InlineKeyboardButton(text="🔙 К торговле", callback_data="trade_menu")
