@@ -2,6 +2,7 @@
 import pandas as pd
 import asyncio
 from typing import Dict, Any, List, Optional, Callable, Union, Awaitable
+from datetime import datetime, timezone, timedelta
 from ..exchange.binance import BinanceClient
 from ..utils.logger import logger
 
@@ -59,6 +60,18 @@ class MACDIndicator:
         self.entry_stream_active = False
         self.exit_stream_active = False
 
+        # Кеш для накопления кастомных свечей
+        self.custom_klines_cache: Dict[str, List[Dict[str, Any]]] = {}
+
+        # Конфигурация кастомных таймфреймов
+        self.custom_timeframes = {
+            '45m': {'base': '15m', 'count': 3},  # 3 свечи по 15м
+            '50m': {'base': '5m', 'count': 10},  # 10 свечей по 5м
+            '55m': {'base': '5m', 'count': 11},  # 11 свечей по 5м
+            '3h': {'base': '1h', 'count': 3},  # 3 свечи по 1ч
+            '4h': {'base': '1h', 'count': 4}  # 4 свечи по 1ч
+        }
+
         logger.info(f"MACD инициализирован для {symbol}")
         logger.info(f"Таймфрейм входа: {entry_timeframe}")
         logger.info(f"Таймфрейм выхода: {exit_timeframe}")
@@ -74,6 +87,97 @@ class MACDIndicator:
         Callable[[Dict[str, Any]], None], Callable[[Dict[str, Any]], Awaitable[None]]]):
         """Добавить callback для сигналов выхода"""
         self.exit_callbacks.append(callback)
+
+    def _is_custom_timeframe(self, timeframe: str) -> bool:
+        """Проверка является ли таймфрейм кастомным"""
+        return timeframe in self.custom_timeframes
+
+    @staticmethod
+    def _get_timeframe_minutes(timeframe: str) -> int:
+        """Получение количества минут в таймфрейме"""
+        if timeframe.endswith('m'):
+            return int(timeframe[:-1])
+        elif timeframe.endswith('h'):
+            return int(timeframe[:-1]) * 60
+        return 0
+
+    def _get_custom_interval_start_times(self, custom_tf: str) -> List[datetime]:
+        """
+        Получение правильных времен начала кастомных интервалов
+
+        Args:
+            custom_tf: Кастомный таймфрейм (45m, 50m, 55m)
+
+        Returns:
+            Список времен начала интервалов в течение дня
+        """
+        custom_minutes = self._get_timeframe_minutes(custom_tf)
+
+        # Начинаем с полуночи UTC
+        day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+
+        start_times = []
+        current_time = day_start
+
+        # Генерируем все интервалы в течение дня
+        while current_time.day == day_start.day:
+            start_times.append(current_time)
+            current_time += timedelta(minutes=custom_minutes)
+
+        return start_times
+
+    def _find_current_custom_interval(self, current_time: datetime, custom_tf: str) -> tuple[datetime, datetime]:
+        """
+        Определение текущего кастомного интервала
+
+        Args:
+            current_time: Текущее время
+            custom_tf: Кастомный таймфрейм
+
+        Returns:
+            Кортеж (начало_интервала, конец_интервала)
+        """
+        custom_minutes = self._get_timeframe_minutes(custom_tf)
+
+        # Получаем все интервалы дня
+        start_times = self._get_custom_interval_start_times(custom_tf)
+
+        # Находим подходящий интервал
+        for i, start_time in enumerate(start_times):
+            end_time = start_time + timedelta(minutes=custom_minutes)
+
+            if start_time <= current_time < end_time:
+                return start_time, end_time
+
+        # Если не нашли в текущем дне, возможно это начало следующего дня
+        next_day_start = current_time.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        return next_day_start, next_day_start + timedelta(minutes=custom_minutes)
+
+    def _should_complete_custom_kline(self, kline_time: datetime, custom_tf: str) -> bool:
+        """
+        Проверка должна ли завершиться кастомная свеча
+
+        Args:
+            kline_time: Время закрытия базовой свечи
+            custom_tf: Кастомный таймфрейм
+
+        Returns:
+            True если кастомная свеча должна завершиться
+        """
+        interval_start, interval_end = self._find_current_custom_interval(kline_time, custom_tf)
+
+        # Кастомная свеча завершается, если базовая свеча закрывается в конце интервала
+        # Учитываем небольшую погрешность (30 секунд)
+        time_diff = abs((kline_time - interval_end).total_seconds())
+
+        should_complete = time_diff <= 30  # 30 секунд погрешность
+
+        if should_complete:
+            logger.info(f"🕒 Завершение кастомной свечи {custom_tf}")
+            logger.info(f"   Интервал: {interval_start.strftime('%H:%M')} - {interval_end.strftime('%H:%M')}")
+            logger.info(f"   Время базовой свечи: {kline_time.strftime('%H:%M:%S')}")
+
+        return should_complete
 
     @staticmethod
     def calculate_ema(data: pd.Series, period: int) -> pd.Series:
@@ -183,21 +287,53 @@ class MACDIndicator:
         """Загрузка исторических данных для обоих таймфреймов"""
         logger.info(f"Загружаем историю для {self.symbol}")
 
-        # Загружаем данные для таймфрейма входа
-        logger.info(f"Загружаем {self.min_history} свечей для входа ({self.entry_timeframe})")
-        self.entry_klines = await self.binance_client.get_klines(
-            self.symbol, self.entry_timeframe, self.min_history
-        )
+        if self._is_custom_timeframe(self.entry_timeframe):
+            # Для кастомного таймфрейма загружаем базовые свечи
+            config = self.custom_timeframes[self.entry_timeframe]
+            base_timeframe = config['base']
+
+            logger.info(
+                f"Загружаем {self.min_history * config['count']} базовых свечей {base_timeframe} для {self.entry_timeframe}")
+            base_klines = await self.binance_client.get_klines(
+                self.symbol, base_timeframe, self.min_history * config['count']
+            )
+
+            if not base_klines:
+                raise Exception(f"Не удалось загрузить базовые данные для {base_timeframe}")
+
+            # Строим кастомные свечи из базовых
+            self.entry_klines = self._build_historical_custom_klines(base_klines, self.entry_timeframe)
+
+        else:
+            # Обычный таймфрейм
+            logger.info(f"Загружаем {self.min_history} свечей для входа ({self.entry_timeframe})")
+            self.entry_klines = await self.binance_client.get_klines(
+                self.symbol, self.entry_timeframe, self.min_history
+            )
 
         if not self.entry_klines:
             raise Exception(f"Не удалось загрузить данные для {self.entry_timeframe}")
 
         # Если таймфреймы разные, загружаем данные для выхода
         if self.dual_timeframe:
-            logger.info(f"Загружаем {self.min_history} свечей для выхода ({self.exit_timeframe})")
-            self.exit_klines = await self.binance_client.get_klines(
-                self.symbol, self.exit_timeframe, self.min_history
-            )
+            if self._is_custom_timeframe(self.exit_timeframe):
+                # Аналогично для exit таймфрейма
+                config = self.custom_timeframes[self.exit_timeframe]
+                base_timeframe = config['base']
+
+                base_klines = await self.binance_client.get_klines(
+                    self.symbol, base_timeframe, self.min_history * config['count']
+                )
+
+                if not base_klines:
+                    raise Exception(f"Не удалось загрузить базовые данные для {base_timeframe}")
+
+                self.exit_klines = self._build_historical_custom_klines(base_klines, self.exit_timeframe)
+            else:
+                logger.info(f"Загружаем {self.min_history} свечей для выхода ({self.exit_timeframe})")
+                self.exit_klines = await self.binance_client.get_klines(
+                    self.symbol, self.exit_timeframe, self.min_history
+                )
 
             if not self.exit_klines:
                 raise Exception(f"Не удалось загрузить данные для {self.exit_timeframe}")
@@ -215,37 +351,164 @@ class MACDIndicator:
 
         logger.info(f"✅ История загружена: вход={len(self.entry_df)}, выход={len(self.exit_df)}")
 
+    def _build_historical_custom_klines(self, base_klines: List[Dict[str, Any]], custom_tf: str) -> List[
+        Dict[str, Any]]:
+        """Построение кастомных свечей из исторических базовых свечей"""
+        if not base_klines:
+            return []
+
+        config = self.custom_timeframes[custom_tf]
+        custom_minutes = self._get_timeframe_minutes(custom_tf)
+
+        custom_klines = []
+        current_group = []
+
+        for kline in base_klines:
+            kline_time = datetime.fromtimestamp(kline['timestamp'] / 1000, tz=timezone.utc)
+
+            # Определяем к какому кастомному интервалу относится эта свеча
+            interval_start, interval_end = self._find_current_custom_interval(kline_time, custom_tf)
+
+            # Если это новый интервал и у нас есть накопленные свечи - завершаем предыдущий
+            if current_group:
+                last_kline_time = datetime.fromtimestamp(current_group[-1]['timestamp'] / 1000, tz=timezone.utc)
+                last_interval_start, _ = self._find_current_custom_interval(last_kline_time, custom_tf)
+
+                if interval_start != last_interval_start:
+                    # Новый интервал - завершаем предыдущий
+                    if len(current_group) > 0:
+                        merged = self._merge_klines(current_group)
+                        if merged:
+                            custom_klines.append(merged)
+                    current_group = []
+
+            # Добавляем свечу в текущую группу
+            current_group.append(kline)
+
+        # Завершаем последнюю группу
+        if current_group:
+            merged = self._merge_klines(current_group)
+            if merged:
+                custom_klines.append(merged)
+
+        logger.info(f"Построено {len(custom_klines)} кастомных свечей {custom_tf} из {len(base_klines)} базовых")
+        return custom_klines
+
+    @staticmethod
+    def _merge_klines(klines: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Объединение нескольких свечей в одну кастомную"""
+        if not klines:
+            return {}
+
+        # Сортируем по времени
+        klines.sort(key=lambda x: x['timestamp'])
+
+        merged = {
+            'timestamp': klines[0]['timestamp'],
+            'open': klines[0]['open'],
+            'high': max(k['high'] for k in klines),
+            'low': min(k['low'] for k in klines),
+            'close': klines[-1]['close'],
+            'volume': sum(k['volume'] for k in klines),
+            'close_time': klines[-1]['close_time'],
+            'quote_volume': sum(k.get('quote_volume', 0) for k in klines),
+            'trades_count': sum(k.get('trades_count', 0) for k in klines)
+        }
+
+        return merged
+
     async def entry_kline_callback(self, kline: Dict[str, Any]):
         """Callback для новых свечей таймфрейма входа"""
         try:
-            # Добавляем новую свечу
-            self.entry_klines.append(kline)
-
-            # Обновляем DataFrame
-            self.entry_df = MACDIndicator.klines_to_dataframe(self.entry_klines[-self.min_history:])
-            self.entry_df = self.calculate_macd(self.entry_df)
-
-            # Проверяем сигналы ТОЛЬКО при пересечении
-            signal = self.detect_macd_signals(self.entry_df, 'entry')
-
-            if signal:
-                logger.info(f"🎯 ПЕРЕСЕЧЕНИЕ! Сигнал входа: {signal['type']} на {signal['timeframe']}")
-                logger.info(f"   Тип пересечения: {signal['crossover_type']}")
-                logger.info(
-                    f"   Цена: {signal['price']}, MACD: {signal['macd_line']:.6f} → Signal: {signal['signal_line']:.6f}")
-
-                # Вызываем все callback'и для входа
-                for callback in self.entry_callbacks:
-                    try:
-                        if asyncio.iscoroutinefunction(callback):
-                            await callback(signal)
-                        else:
-                            callback(signal)
-                    except Exception as e:
-                        logger.error(f"Ошибка в entry callback: {e}")
+            if self._is_custom_timeframe(self.entry_timeframe):
+                # Обрабатываем кастомный таймфрейм
+                await self._process_custom_kline_entry(kline)
+            else:
+                # Обрабатываем обычный таймфрейм
+                await self._process_standard_kline_entry(kline)
 
         except Exception as e:
             logger.error(f"Ошибка в entry_kline_callback: {e}")
+
+    async def _process_standard_kline_entry(self, kline: Dict[str, Any]):
+        """Обработка обычной свечи для входа"""
+        # Добавляем новую свечу
+        self.entry_klines.append(kline)
+
+        # Обновляем DataFrame
+        self.entry_df = MACDIndicator.klines_to_dataframe(self.entry_klines[-self.min_history:])
+        self.entry_df = self.calculate_macd(self.entry_df)
+
+        # Проверяем сигналы ТОЛЬКО при пересечении
+        signal = self.detect_macd_signals(self.entry_df, 'entry')
+
+        if signal:
+            logger.info(f"🎯 ПЕРЕСЕЧЕНИЕ! Сигнал входа: {signal['type']} на {signal['timeframe']}")
+            logger.info(f"   Тип пересечения: {signal['crossover_type']}")
+            logger.info(
+                f"   Цена: {signal['price']}, MACD: {signal['macd_line']:.6f} → Signal: {signal['signal_line']:.6f}")
+
+            # Вызываем все callback'и для входа
+            for callback in self.entry_callbacks:
+                try:
+                    if asyncio.iscoroutinefunction(callback):
+                        await callback(signal)
+                    else:
+                        callback(signal)
+                except Exception as e:
+                    logger.error(f"Ошибка в entry callback: {e}")
+
+    async def _process_custom_kline_entry(self, base_kline: Dict[str, Any]):
+        """Обработка базовой свечи для кастомного таймфрейма входа"""
+        cache_key = f"{self.symbol}_{self.entry_timeframe}_entry"
+
+        # Инициализируем кеш если нужно
+        if cache_key not in self.custom_klines_cache:
+            self.custom_klines_cache[cache_key] = []
+
+        # Добавляем базовую свечу в кеш
+        self.custom_klines_cache[cache_key].append(base_kline)
+
+        # Проверяем нужно ли завершить кастомную свечу
+        base_kline_time = datetime.fromtimestamp(base_kline['close_time'] / 1000, tz=timezone.utc)
+
+        if self._should_complete_custom_kline(base_kline_time, self.entry_timeframe):
+            # Завершаем кастомную свечу
+            cached_klines = self.custom_klines_cache[cache_key]
+
+            if cached_klines:
+                # Формируем кастомную свечу
+                custom_kline = self._merge_klines(cached_klines)
+
+                if custom_kline:
+                    # Добавляем к истории
+                    self.entry_klines.append(custom_kline)
+
+                    # Обновляем DataFrame
+                    self.entry_df = MACDIndicator.klines_to_dataframe(self.entry_klines[-self.min_history:])
+                    self.entry_df = self.calculate_macd(self.entry_df)
+
+                    # Проверяем сигналы
+                    signal = self.detect_macd_signals(self.entry_df, 'entry')
+
+                    if signal:
+                        logger.info(f"🎯 ПЕРЕСЕЧЕНИЕ! Сигнал входа: {signal['type']} на {signal['timeframe']}")
+                        logger.info(f"   Тип пересечения: {signal['crossover_type']}")
+                        logger.info(
+                            f"   Цена: {signal['price']}, MACD: {signal['macd_line']:.6f} → Signal: {signal['signal_line']:.6f}")
+
+                        # Вызываем все callback'и для входа
+                        for callback in self.entry_callbacks:
+                            try:
+                                if asyncio.iscoroutinefunction(callback):
+                                    await callback(signal)
+                                else:
+                                    callback(signal)
+                            except Exception as e:
+                                logger.error(f"Ошибка в entry callback: {e}")
+
+                # Очищаем кеш для следующего интервала
+                self.custom_klines_cache[cache_key] = []
 
     async def exit_kline_callback(self, kline: Dict[str, Any]):
         """Callback для новых свечей таймфрейма выхода"""
@@ -254,34 +517,95 @@ class MACDIndicator:
             if not self.dual_timeframe:
                 return
 
-            # Добавляем новую свечу
-            self.exit_klines.append(kline)
-
-            # Обновляем DataFrame
-            self.exit_df = MACDIndicator.klines_to_dataframe(self.exit_klines[-self.min_history:])
-            self.exit_df = self.calculate_macd(self.exit_df)
-
-            # Проверяем сигналы ТОЛЬКО при пересечении
-            signal = self.detect_macd_signals(self.exit_df, 'exit')
-
-            if signal:
-                logger.info(f"🚪 ПЕРЕСЕЧЕНИЕ! Сигнал выхода: {signal['type']} на {signal['timeframe']}")
-                logger.info(f"   Тип пересечения: {signal['crossover_type']}")
-                logger.info(
-                    f"   Цена: {signal['price']}, MACD: {signal['macd_line']:.6f} → Signal: {signal['signal_line']:.6f}")
-
-                # Вызываем все callback'и для выхода
-                for callback in self.exit_callbacks:
-                    try:
-                        if asyncio.iscoroutinefunction(callback):
-                            await callback(signal)
-                        else:
-                            callback(signal)
-                    except Exception as e:
-                        logger.error(f"Ошибка в exit callback: {e}")
+            if self._is_custom_timeframe(self.exit_timeframe):
+                # Обрабатываем кастомный таймфрейм
+                await self._process_custom_kline_exit(kline)
+            else:
+                # Обрабатываем обычный таймфрейм
+                await self._process_standard_kline_exit(kline)
 
         except Exception as e:
             logger.error(f"Ошибка в exit_kline_callback: {e}")
+
+    async def _process_standard_kline_exit(self, kline: Dict[str, Any]):
+        """Обработка обычной свечи для выхода"""
+        # Добавляем новую свечу
+        self.exit_klines.append(kline)
+
+        # Обновляем DataFrame
+        self.exit_df = MACDIndicator.klines_to_dataframe(self.exit_klines[-self.min_history:])
+        self.exit_df = self.calculate_macd(self.exit_df)
+
+        # Проверяем сигналы ТОЛЬКО при пересечении
+        signal = self.detect_macd_signals(self.exit_df, 'exit')
+
+        if signal:
+            logger.info(f"🚪 ПЕРЕСЕЧЕНИЕ! Сигнал выхода: {signal['type']} на {signal['timeframe']}")
+            logger.info(f"   Тип пересечения: {signal['crossover_type']}")
+            logger.info(
+                f"   Цена: {signal['price']}, MACD: {signal['macd_line']:.6f} → Signal: {signal['signal_line']:.6f}")
+
+            # Вызываем все callback'и для выхода
+            for callback in self.exit_callbacks:
+                try:
+                    if asyncio.iscoroutinefunction(callback):
+                        await callback(signal)
+                    else:
+                        callback(signal)
+                except Exception as e:
+                    logger.error(f"Ошибка в exit callback: {e}")
+
+    async def _process_custom_kline_exit(self, base_kline: Dict[str, Any]):
+        """Обработка базовой свечи для кастомного таймфрейма выхода"""
+        cache_key = f"{self.symbol}_{self.exit_timeframe}_exit"
+
+        # Инициализируем кеш если нужно
+        if cache_key not in self.custom_klines_cache:
+            self.custom_klines_cache[cache_key] = []
+
+        # Добавляем базовую свечу в кеш
+        self.custom_klines_cache[cache_key].append(base_kline)
+
+        # Проверяем нужно ли завершить кастомную свечу
+        base_kline_time = datetime.fromtimestamp(base_kline['close_time'] / 1000, tz=timezone.utc)
+
+        if self._should_complete_custom_kline(base_kline_time, self.exit_timeframe):
+            # Завершаем кастомную свечу
+            cached_klines = self.custom_klines_cache[cache_key]
+
+            if cached_klines:
+                # Формируем кастомную свечу
+                custom_kline = self._merge_klines(cached_klines)
+
+                if custom_kline:
+                    # Добавляем к истории
+                    self.exit_klines.append(custom_kline)
+
+                    # Обновляем DataFrame
+                    self.exit_df = MACDIndicator.klines_to_dataframe(self.exit_klines[-self.min_history:])
+                    self.exit_df = self.calculate_macd(self.exit_df)
+
+                    # Проверяем сигналы
+                    signal = self.detect_macd_signals(self.exit_df, 'exit')
+
+                    if signal:
+                        logger.info(f"🚪 ПЕРЕСЕЧЕНИЕ! Сигнал выхода: {signal['type']} на {signal['timeframe']}")
+                        logger.info(f"   Тип пересечения: {signal['crossover_type']}")
+                        logger.info(
+                            f"   Цена: {signal['price']}, MACD: {signal['macd_line']:.6f} → Signal: {signal['signal_line']:.6f}")
+
+                        # Вызываем все callback'и для выхода
+                        for callback in self.exit_callbacks:
+                            try:
+                                if asyncio.iscoroutinefunction(callback):
+                                    await callback(signal)
+                                else:
+                                    callback(signal)
+                            except Exception as e:
+                                logger.error(f"Ошибка в exit callback: {e}")
+
+                # Очищаем кеш для следующего интервала
+                self.custom_klines_cache[cache_key] = []
 
     async def start(self):
         """Запуск индикатора"""
@@ -305,17 +629,31 @@ class MACDIndicator:
             def exit_wrapper(kline: Dict[str, Any]) -> None:
                 asyncio.create_task(self.exit_kline_callback(kline))
 
+            # Определяем какой базовый таймфрейм нужен для entry
+            if self._is_custom_timeframe(self.entry_timeframe):
+                base_entry_tf = self.custom_timeframes[self.entry_timeframe]['base']
+            else:
+                base_entry_tf = self.entry_timeframe
+
             # Поток для входа
             await self.binance_client.start_kline_stream(
-                self.symbol, self.entry_timeframe, entry_wrapper
+                self.symbol, base_entry_tf, entry_wrapper
             )
             self.entry_stream_active = True
 
             # Поток для выхода (только если таймфреймы разные)
             if self.dual_timeframe:
-                await self.binance_client.start_kline_stream(
-                    self.symbol, self.exit_timeframe, exit_wrapper
-                )
+                if self._is_custom_timeframe(self.exit_timeframe):
+                    base_exit_tf = self.custom_timeframes[self.exit_timeframe]['base']
+                else:
+                    base_exit_tf = self.exit_timeframe
+
+                # Запускаем только если базовые таймфреймы разные
+                if base_exit_tf != base_entry_tf:
+                    await self.binance_client.start_kline_stream(
+                        self.symbol, base_exit_tf, exit_wrapper
+                    )
+
                 self.exit_stream_active = True
             else:
                 # Если таймфреймы одинаковые, exit_stream считается активным
@@ -338,14 +676,31 @@ class MACDIndicator:
         logger.info("⏹️ Останавливаем MACD индикатор...")
 
         try:
+            # Определяем базовые таймфреймы
+            if self._is_custom_timeframe(self.entry_timeframe):
+                base_entry_tf = self.custom_timeframes[self.entry_timeframe]['base']
+            else:
+                base_entry_tf = self.entry_timeframe
+
+            if self.dual_timeframe:
+                if self._is_custom_timeframe(self.exit_timeframe):
+                    base_exit_tf = self.custom_timeframes[self.exit_timeframe]['base']
+                else:
+                    base_exit_tf = self.exit_timeframe
+            else:
+                base_exit_tf = base_entry_tf
+
             # Останавливаем потоки
             if self.entry_stream_active:
-                await self.binance_client.stop_kline_stream(self.symbol, self.entry_timeframe)
+                await self.binance_client.stop_kline_stream(self.symbol, base_entry_tf)
                 self.entry_stream_active = False
 
-            if self.dual_timeframe and self.exit_stream_active:
-                await self.binance_client.stop_kline_stream(self.symbol, self.exit_timeframe)
+            if self.dual_timeframe and self.exit_stream_active and base_exit_tf != base_entry_tf:
+                await self.binance_client.stop_kline_stream(self.symbol, base_exit_tf)
                 self.exit_stream_active = False
+
+            # Очищаем кеши
+            self.custom_klines_cache.clear()
 
             self.is_running = False
             logger.info("✅ MACD индикатор остановлен")
