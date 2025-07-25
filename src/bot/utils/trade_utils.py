@@ -86,59 +86,92 @@ class TradeBotUtils:
     @staticmethod
     def get_trade_menu_text(telegram_id: int) -> str:
         """Генерация текста для главного торгового меню"""
+        from ...strategies import strategy_manager
 
         # Проверяем настройки
         settings_info = TradeBotUtils.check_settings_completeness(telegram_id)
 
-        # Получаем настройки пользователя
-        user_settings = db.get_user_settings(telegram_id)
+        # Проверяем активную стратегию
+        is_strategy_active = strategy_manager.is_strategy_active(telegram_id)
 
-        # Формируем статус настроек
-        if settings_info['complete']:
-            settings_status = "✅ Настройки завершены"
-            settings_emoji = "🟢"
-            bot_status = "⏳ Ожидает запуска"
-        else:
-            settings_status = f"❌ Не завершены ({settings_info['progress']}/{settings_info['total_count']})"
-            settings_emoji = "🔴"
-            bot_status = "⚙️ Ожидает настройки"
+        if is_strategy_active:
+            # Если стратегия активна - показываем ее статус
+            strategy_status = strategy_manager.get_strategy_status(telegram_id)
+            strategy_name = strategy_status.get('strategy_name', 'Unknown')
+            position_state = strategy_status.get('position_state', 'Unknown')
+            symbol = strategy_status.get('symbol', 'Unknown')
 
-        text = (
-            f"🤖 <b>Торговый бот MACD</b>\n\n"
-            f"📊 <b>Статус:</b> {bot_status}\n"
-            f"{settings_emoji} <b>Настройки:</b> {settings_status}\n\n"
-        )
-
-        if settings_info['complete']:
-            # Когда настройки завершены - показываем сообщение о готовности
-            text += f"🎯 <b>Готов к торговле!</b> Выберите стратегию для запуска."
-        else:
-            # Когда настройки не завершены - показываем что нужно доделать
-            text += (
-                f"⚠️ <b>Завершите настройки:</b> "
+            text = (
+                f"🤖 <b>Торговый бот MACD</b>\n\n"
+                f"🟢 <b>Статус:</b> Активная торговля\n"
+                f"🎯 <b>Стратегия:</b> {strategy_name}\n"
+                f"📊 <b>Позиция:</b> {position_state}\n"
+                f"💰 <b>Символ:</b> {symbol}\n\n"
+                f"✅ <b>Стратегия работает автоматически!</b>\n"
+                f"📈 Следите за уведомлениями о сделках."
             )
 
-            # Показываем первые 3 недостающие настройки
-            missing_short = settings_info['missing_settings'][:3]
-            text += ", ".join(missing_short)
+        else:
+            # Если стратегия не активна - показываем статус настроек
+            if settings_info['complete']:
+                settings_status = "✅ Настройки завершены"
+                settings_emoji = "🟢"
+                bot_status = "⏳ Ожидает запуска"
+            else:
+                settings_status = f"❌ Не завершены ({settings_info['progress']}/{settings_info['total_count']})"
+                settings_emoji = "🔴"
+                bot_status = "⚙️ Ожидает настройки"
 
-            if len(settings_info['missing_settings']) > 3:
-                remaining = len(settings_info['missing_settings']) - 3
-                text += f" и ещё {remaining}"
+            text = (
+                f"🤖 <b>Торговый бот MACD</b>\n\n"
+                f"📊 <b>Статус:</b> {bot_status}\n"
+                f"{settings_emoji} <b>Настройки:</b> {settings_status}\n\n"
+            )
+
+            if settings_info['complete']:
+                # Когда настройки завершены - показываем сообщение о готовности
+                text += f"🎯 <b>Готов к торговле!</b> Выберите стратегию для запуска."
+            else:
+                # Когда настройки не завершены - показываем что нужно доделать
+                text += (
+                    f"⚠️ <b>Завершите настройки:</b> "
+                )
+
+                # Показываем первые 3 недостающие настройки
+                missing_short = settings_info['missing_settings'][:3]
+                text += ", ".join(missing_short)
+
+                if len(settings_info['missing_settings']) > 3:
+                    remaining = len(settings_info['missing_settings']) - 3
+                    text += f" и ещё {remaining}"
 
         return text
 
     @staticmethod
     def get_strategy_menu_text() -> str:
         """Текст меню выбора стратегии"""
-        return (
-            f"🎯 <b>Выбор стратегии MACD</b>\n\n"
-            f"💡 Выберите подходящую стратегию"
-        )
+        from ...strategies import strategy_manager
+
+        available = strategy_manager.get_available_strategies()
+        active_count = strategy_manager.get_active_strategies_count()
+
+        text = f"🎯 <b>Выбор стратегии MACD</b>\n\n"
+
+        if active_count > 0:
+            text += f"⚠️ <i>Активных стратегий: {active_count}</i>\n\n"
+
+        text += "💡 Доступные стратегии:\n"
+        text += f"{'✅' if available.get('macd_full') else '🚧'} MACD Full - всегда в позиции\n"
+        text += f"{'✅' if available.get('macd_long') else '🚧'} MACD Long - только покупки\n"
+        text += f"{'✅' if available.get('macd_short') else '🚧'} MACD Short - только продажи\n\n"
+        text += "🔽 <b>Выберите стратегию для запуска:</b>"
+
+        return text
 
     @staticmethod
     def get_strategy_confirm_text(strategy_name: str, telegram_id: int) -> str:
         """Текст подтверждения выбранной стратегии"""
+        from ...strategies import strategy_manager
 
         strategy_names = {
             'macd_full': 'MACD Full (Long + Short)',
@@ -169,6 +202,19 @@ class TradeBotUtils:
         tp_sl_info = db.get_tp_sl_info(telegram_id)
         tp_sl_status = tp_sl_info.get('display', 'Не настроено')
 
+        # Проверяем доступность стратегии
+        available_strategies = strategy_manager.get_available_strategies()
+        is_available = available_strategies.get(strategy_name, False)
+
+        if not is_available:
+            return (
+                f"🚧 <b>Стратегия в разработке</b>\n\n"
+                f"🎯 <b>Стратегия:</b> {strategy_display}\n\n"
+                f"⚠️ <b>Эта стратегия еще не реализована</b>\n"
+                f"📅 <i>Скоро будет доступна!</i>\n\n"
+                f"💡 <i>Попробуйте MACD Full стратегию</i>"
+            )
+
         text = (
             f"🚀 <b>Подтверждение запуска</b>\n\n"
             f"🎯 <b>Стратегия:</b> {strategy_display}\n\n"
@@ -187,22 +233,58 @@ class TradeBotUtils:
 
     @staticmethod
     def get_statistics_text(telegram_id: int) -> str:
-        """Текст статистики торговли с актуальной позицией"""
+        """Текст статистики торговли с реальными данными"""
+        from ...strategies import strategy_manager
+
+        # Получаем историю сделок из БД
+        trades = db.get_user_trades_history(telegram_id, limit=100)
+
+        # Рассчитываем статистику
+        total_trades = len(trades)
+        total_pnl = 0.0
+        profitable_trades = 0
+        losing_trades = 0
+
+        for trade in trades:
+            if trade['status'] == 'closed' and trade['pnl'] is not None:
+                total_pnl += trade['pnl']
+                if trade['pnl'] > 0:
+                    profitable_trades += 1
+                elif trade['pnl'] < 0:
+                    losing_trades += 1
+
+        closed_trades = profitable_trades + losing_trades
+        win_rate = (profitable_trades / closed_trades * 100) if closed_trades > 0 else 0
 
         # Получаем настройки пользователя для торговой пары
         user_settings = db.get_user_settings(telegram_id)
         trading_pair = user_settings.get('trading_pair') if user_settings else None
 
-        # Пока заглушка для позиции, в будущем будет реальная проверка через Bybit API
+        # Проверяем активную стратегию и текущую позицию
         current_position = TradeBotUtils._get_current_position(telegram_id, trading_pair)
+
+        # Статус стратегии
+        is_active = strategy_manager.is_strategy_active(telegram_id)
+        strategy_status_text = ""
+
+        if is_active:
+            strategy_status = strategy_manager.get_strategy_status(telegram_id)
+            strategy_status_text = (
+                f"\n🟢 <b>Активная стратегия:</b> {strategy_status.get('strategy_name', 'Unknown')}\n"
+                f"📊 <b>Состояние:</b> {strategy_status.get('position_state', 'Unknown')}"
+            )
+
+        pnl_emoji = "💚" if total_pnl > 0 else "💔" if total_pnl < 0 else "💙"
 
         return (
             f"📊 <b>Статистика торговли</b>\n\n"
-            f"💰 <b>Общий P&L:</b> +0.00 USDT\n"
-            f"🔢 <b>Всего сделок:</b> 0\n"
-            f"📈 <b>Прибыльных сделок:</b> 0 из 0 (0%)\n"
-            f"📉 <b>Убыточных сделок:</b> 0 из 0 (0%)\n\n"
-            f"📊 <b>Актуальная позиция:</b> {current_position}"
+            f"{pnl_emoji} <b>Общий P&L:</b> {total_pnl:+.2f} USDT\n"
+            f"🔢 <b>Всего сделок:</b> {total_trades}\n"
+            f"✅ <b>Закрытых сделок:</b> {closed_trades}\n"
+            f"📈 <b>Прибыльных:</b> {profitable_trades} ({win_rate:.1f}%)\n"
+            f"📉 <b>Убыточных:</b> {losing_trades}\n\n"
+            f"📊 <b>Текущая позиция:</b> {current_position}"
+            f"{strategy_status_text}"
         )
 
     @staticmethod
@@ -217,12 +299,24 @@ class TradeBotUtils:
         Returns:
             Строка с описанием позиции
         """
-        # Пока заглушка, в будущем здесь будет:
-        # 1. Проверка API ключей
-        # 2. Запрос к Bybit API для получения открытых позиций
-        # 3. Форматирование позиции
+        from ...strategies import strategy_manager
 
         try:
+            # Проверяем есть ли активная стратегия
+            if strategy_manager.is_strategy_active(telegram_id):
+                strategy_status = strategy_manager.get_strategy_status(telegram_id)
+                position_state = strategy_status.get('position_state', 'Unknown')
+                symbol = strategy_status.get('symbol', 'Unknown')
+
+                if position_state == 'no_position':
+                    return "нет"
+                elif position_state == 'long_position':
+                    return f"LONG {symbol}"
+                elif position_state == 'short_position':
+                    return f"SHORT {symbol}"
+                else:
+                    return f"{position_state} {symbol}"
+
             # Проверяем есть ли настройки API
             user_settings = db.get_user_settings(telegram_id)
             if not user_settings or not user_settings.get('bybit_api_key') or not user_settings.get('bybit_secret_key'):
@@ -231,16 +325,9 @@ class TradeBotUtils:
             if not trading_pair:
                 return "торговая пара не установлена"
 
+            # Если нет активной стратегии, но есть API - можем проверить позицию
             # В будущем здесь будет реальный запрос к Bybit API
-            # Пока возвращаем заглушку
-            has_position = False  # Заглушка, в будущем - реальная проверка
-
-            if has_position:
-                # Пример форматирования позиции:
-                # return f"LONG {trading_pair} | Размер: 0.1 BTC | P&L: +15.30 USDT"
-                return f"нет данных (API в разработке)"
-            else:
-                return "нет"
+            return "нет активной стратегии"
 
         except Exception as e:
             logger.error(f"Ошибка получения позиции для {telegram_id}: {e}")
@@ -266,6 +353,30 @@ class TradeBotUtils:
     @staticmethod
     def get_balance_text(telegram_id: int) -> str:
         """Текст баланса счёта"""
+        from ...strategies import strategy_manager
+
+        # Проверяем API настройки
+        user_settings = db.get_user_settings(telegram_id)
+
+        if not user_settings or not user_settings.get('bybit_api_key') or not user_settings.get('bybit_secret_key'):
+            return (
+                f"💰 <b>Баланс счёта Bybit</b>\n\n"
+                f"❌ <b>API ключи не настроены</b>\n\n"
+                f"🔧 <i>Настройте API ключи в разделе настроек\n"
+                f"для отображения реального баланса</i>"
+            )
+
+        # Проверяем активную стратегию
+        is_active = strategy_manager.is_strategy_active(telegram_id)
+        strategy_text = ""
+
+        if is_active:
+            strategy_status = strategy_manager.get_strategy_status(telegram_id)
+            strategy_text = (
+                f"\n🤖 <b>Активная стратегия:</b> {strategy_status.get('strategy_name', 'Unknown')}\n"
+                f"📊 <b>Размер позиции:</b> {strategy_status.get('position_size', 'Unknown')}"
+            )
+
         # Пока заглушка, в будущем будет получать реальный баланс через Bybit API
         return (
             f"💰 <b>Баланс счёта Bybit</b>\n\n"
@@ -273,7 +384,33 @@ class TradeBotUtils:
             f"✅ <b>Доступно:</b> 0.00 USDT\n"
             f"🔒 <b>В позициях:</b> 0.00 USDT\n"
             f"📊 <b>Нереализованный P&L:</b> +0.00 USDT\n\n"
-            f"🔄 <i>Обновлено: только что</i>\n\n"
-            f"⚠️ <i>Для отображения реального баланса\n"
-            f"проверьте настройки API ключей</i>"
+            f"🔄 <i>Обновлено: только что</i>\n"
+            f"⚠️ <i>Функция получения реального баланса\n"
+            f"будет добавлена в следующих версиях</i>"
+            f"{strategy_text}"
         )
+
+    @staticmethod
+    def get_active_strategy_info(telegram_id: int) -> Dict[str, Any]:
+        """Получение информации об активной стратегии"""
+        from ...strategies import strategy_manager
+
+        if not strategy_manager.is_strategy_active(telegram_id):
+            return {
+                'is_active': False,
+                'strategy_name': None,
+                'message': 'Нет активной стратегии'
+            }
+
+        strategy_status = strategy_manager.get_strategy_status(telegram_id)
+
+        return {
+            'is_active': True,
+            'strategy_name': strategy_status.get('strategy_name'),
+            'position_state': strategy_status.get('position_state'),
+            'symbol': strategy_status.get('symbol'),
+            'position_size': strategy_status.get('position_size'),
+            'status': strategy_status.get('status'),
+            'start_time': strategy_status.get('start_time'),
+            'strategy_id': strategy_status.get('strategy_id')
+        }

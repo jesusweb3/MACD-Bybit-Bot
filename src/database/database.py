@@ -1,6 +1,6 @@
 # src/database/database.py
 import sqlite3
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from ..utils.config import config
 from ..utils.logger import logger
 from datetime import datetime, UTC
@@ -54,6 +54,39 @@ class Database:
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users (id)
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS active_strategies (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    strategy_name TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'running',
+                    started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    stopped_at TEXT,
+                    error_message TEXT,
+                    FOREIGN KEY (user_id) REFERENCES users (id)
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS trade_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    strategy_id INTEGER,
+                    symbol TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    entry_price REAL,
+                    exit_price REAL,
+                    quantity TEXT NOT NULL,
+                    pnl REAL,
+                    order_id TEXT,
+                    opened_at TEXT,
+                    closed_at TEXT,
+                    status TEXT DEFAULT 'open',
+                    FOREIGN KEY (user_id) REFERENCES users (id),
+                    FOREIGN KEY (strategy_id) REFERENCES active_strategies (id)
                 )
             """)
 
@@ -310,6 +343,156 @@ class Database:
             'api_key': settings.get('bybit_api_key'),
             'secret_key': settings.get('bybit_secret_key')
         }
+
+    # Методы для работы со стратегиями
+    def create_active_strategy(self, user_id: int, strategy_name: str) -> int:
+        """Создание записи активной стратегии"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                INSERT INTO active_strategies (user_id, strategy_name, status, started_at)
+                VALUES (?, ?, 'running', ?)
+            """, (user_id, strategy_name, datetime.now(UTC).isoformat()))
+
+            strategy_id = cursor.lastrowid
+            conn.commit()
+
+            logger.info(f"Создана активная стратегия ID={strategy_id} для пользователя {user_id}")
+            return strategy_id
+
+    def update_active_strategy_status(self, strategy_id: int, status: str, error_message: str = None):
+        """Обновление статуса активной стратегии"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+
+            update_fields = ['status = ?']
+            values = [status]
+
+            if status == 'stopped':
+                update_fields.append('stopped_at = ?')
+                values.append(datetime.now(UTC).isoformat())
+
+            if error_message:
+                update_fields.append('error_message = ?')
+                values.append(error_message)
+
+            values.append(strategy_id)
+
+            cursor.execute(f"""
+                UPDATE active_strategies 
+                SET {', '.join(update_fields)}
+                WHERE id = ?
+            """, values)
+
+            conn.commit()
+            logger.info(f"Обновлен статус стратегии {strategy_id}: {status}")
+
+    def get_active_strategy(self, telegram_id: int) -> Optional[Dict[str, Any]]:
+        """Получение активной стратегии пользователя"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT s.* FROM active_strategies s
+                JOIN users u ON s.user_id = u.id
+                WHERE u.telegram_id = ? AND s.status = 'running'
+                ORDER BY s.started_at DESC
+                LIMIT 1
+            """, (telegram_id,))
+
+            strategy = cursor.fetchone()
+            return dict(strategy) if strategy else None
+
+    def get_user_strategies_history(self, telegram_id: int, limit: int = 10) -> List[Dict[str, Any]]:
+        """Получение истории стратегий пользователя"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT s.* FROM active_strategies s
+                JOIN users u ON s.user_id = u.id
+                WHERE u.telegram_id = ?
+                ORDER BY s.started_at DESC
+                LIMIT ?
+            """, (telegram_id, limit))
+
+            strategies = cursor.fetchall()
+            return [dict(strategy) for strategy in strategies]
+
+    def create_trade_record(self, user_id: int, strategy_id: int, symbol: str,
+                            side: str, quantity: str, order_id: str = None) -> int:
+        """Создание записи сделки"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                INSERT INTO trade_history 
+                (user_id, strategy_id, symbol, side, quantity, order_id, opened_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (user_id, strategy_id, symbol, side, quantity, order_id,
+                  datetime.now(UTC).isoformat()))
+
+            trade_id = cursor.lastrowid
+            conn.commit()
+
+            logger.info(f"Создана запись сделки ID={trade_id}")
+            return trade_id
+
+    def update_trade_record(self, trade_id: int, exit_price: float = None,
+                            pnl: float = None, status: str = None):
+        """Обновление записи сделки"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+
+            update_fields = []
+            values = []
+
+            if exit_price is not None:
+                update_fields.append('exit_price = ?')
+                values.append(exit_price)
+
+            if pnl is not None:
+                update_fields.append('pnl = ?')
+                values.append(pnl)
+
+            if status:
+                update_fields.append('status = ?')
+                values.append(status)
+
+                if status == 'closed':
+                    update_fields.append('closed_at = ?')
+                    values.append(datetime.now(UTC).isoformat())
+
+            if update_fields:
+                values.append(trade_id)
+                cursor.execute(f"""
+                    UPDATE trade_history 
+                    SET {', '.join(update_fields)}
+                    WHERE id = ?
+                """, values)
+
+                conn.commit()
+                logger.info(f"Обновлена запись сделки {trade_id}")
+
+    def get_user_trades_history(self, telegram_id: int, limit: int = 20) -> List[Dict[str, Any]]:
+        """Получение истории сделок пользователя"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT t.* FROM trade_history t
+                JOIN users u ON t.user_id = u.id
+                WHERE u.telegram_id = ?
+                ORDER BY t.opened_at DESC
+                LIMIT ?
+            """, (telegram_id, limit))
+
+            trades = cursor.fetchall()
+            return [dict(trade) for trade in trades]
 
 
 db = Database()
