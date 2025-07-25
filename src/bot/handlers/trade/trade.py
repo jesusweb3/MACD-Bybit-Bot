@@ -16,6 +16,8 @@ from src.utils.logger import logger
 from src.utils.config import config
 from src.database.database import db
 from src.strategies import strategy_manager
+import asyncio
+from datetime import datetime
 
 router = Router()
 
@@ -325,18 +327,43 @@ async def trade_statistics(callback: CallbackQuery):
 
 @router.callback_query(F.data == "trade_balance")
 async def trade_balance(callback: CallbackQuery):
-    """Баланс счёта"""
+    """Баланс счёта - теперь с реальными данными"""
     if not config.is_user_allowed(callback.from_user.id):
         return
 
-    balance_text = TradeBotUtils.get_balance_text(callback.from_user.id)
+    try:
+        # Показываем сообщение о загрузке
+        await callback.message.edit_text(
+            "💰 <b>Баланс счёта Bybit</b>\n\n"
+            "🔄 <b>Получение данных...</b>\n\n"
+            "⏳ <i>Подключение к Bybit API...</i>",
+            parse_mode='HTML'
+        )
+        await callback.answer()
 
-    await callback.message.edit_text(
-        balance_text,
-        reply_markup=get_balance_menu(),
-        parse_mode='HTML'
-    )
-    await callback.answer()
+        # Получаем реальный баланс
+        balance_text = await TradeBotUtils.get_balance_text(callback.from_user.id)
+
+        await callback.message.edit_text(
+            balance_text,
+            reply_markup=get_balance_menu(),
+            parse_mode='HTML'
+        )
+
+    except Exception as e:
+        logger.error(f"Ошибка в trade_balance: {e}")
+
+        error_text = (
+            f"💰 <b>Баланс счёта Bybit</b>\n\n"
+            f"❌ <b>Ошибка получения баланса</b>\n\n"
+            f"🔧 <i>Попробуйте обновить или проверьте настройки API</i>"
+        )
+
+        await callback.message.edit_text(
+            error_text,
+            reply_markup=get_balance_menu(),
+            parse_mode='HTML'
+        )
 
 
 @router.callback_query(F.data == "trade_history")
@@ -355,27 +382,46 @@ async def trade_history(callback: CallbackQuery):
             side_emoji = "📈" if trade['side'] == 'LONG' else "📉"
             status_emoji = "✅" if trade['status'] == 'closed' else "🔄"
 
+            # Форматируем P&L
             pnl_text = ""
             if trade['pnl'] is not None:
-                pnl_emoji = "💚" if trade['pnl'] > 0 else "💔" if trade['pnl'] < 0 else "💙"
-                pnl_text = f"\n{pnl_emoji} P&L: {trade['pnl']:.2f} USDT"
+                try:
+                    from src.utils.helpers import format_pnl
+                    pnl_formatted = format_pnl(trade['pnl'], with_currency=False)
+                    pnl_text = f"\n{pnl_formatted} USDT"
+                except (ImportError, AttributeError):
+                    # Fallback если helpers недоступен
+                    pnl_emoji = "💚" if trade['pnl'] > 0 else "💔" if trade['pnl'] < 0 else "💙"
+                    pnl_text = f"\n{pnl_emoji} P&L: {trade['pnl']:.2f} USDT"
+
+            # Форматируем количество
+            try:
+                from src.utils.helpers import format_quantity
+                quantity_formatted = format_quantity(trade['quantity'])
+            except (ImportError, AttributeError):
+                # Fallback если helpers недоступен
+                quantity_formatted = str(trade['quantity'])
 
             history_text += (
                 f"{status_emoji} {side_emoji} <b>{trade['symbol']}</b>\n"
-                f"📊 Количество: {trade['quantity']}\n"
+                f"📊 Количество: {quantity_formatted}\n"
                 f"📅 Открыта: {trade['opened_at'][:16] if trade['opened_at'] else 'N/A'}"
                 f"{pnl_text}\n\n"
             )
 
         if len(trades) > 5:
-            history_text += f"<i>... и еще {len(trades) - 5} сделок</i>"
+            history_text += f"<i>... и еще {len(trades) - 5} сделок</i>\n\n"
     else:
         history_text = (
             "📋 <b>История сделок</b>\n\n"
             "📝 <i>Сделок пока нет</i>\n\n"
             "💡 <i>После запуска стратегии здесь будут\n"
-            "отображаться все ваши сделки</i>"
+            "отображаться все ваши сделки</i>\n\n"
         )
+
+    # Добавляем время обновления
+    update_time = datetime.now().strftime("%H:%M:%S")
+    history_text += f"🔄 <i>Обновлено: {update_time}</i>"
 
     await callback.message.edit_text(
         history_text,
@@ -391,25 +437,90 @@ async def refresh_trade_history(callback: CallbackQuery):
     if not config.is_user_allowed(callback.from_user.id):
         return
 
-    await callback.answer("🔄 Обновление истории...")
+    try:
+        # Показываем уведомление о начале обновления
+        await callback.answer("🔄 Обновление истории...")
 
-    # Просто перенаправляем на trade_history для обновления
-    await trade_history(callback)
+        # Показываем индикатор загрузки
+        await callback.message.edit_text(
+            "📋 <b>История сделок</b>\n\n"
+            "🔄 <b>Обновление истории...</b>\n\n"
+            "⏳ <i>Получение данных из базы...</i>",
+            parse_mode='HTML'
+        )
+
+        # Небольшая задержка для визуального эффекта
+        await asyncio.sleep(0.5)
+
+        # Вызываем обновленную историю
+        await trade_history(callback)
+
+        logger.info(f"✅ История сделок обновлена для пользователя {callback.from_user.id}")
+
+    except Exception as e:
+        logger.error(f"Ошибка обновления истории для {callback.from_user.id}: {e}")
+
+        # В случае ошибки показываем сообщение об ошибке
+        error_text = (
+            f"📋 <b>История сделок</b>\n\n"
+            f"❌ <b>Ошибка обновления истории</b>\n\n"
+            f"🔧 <i>Попробуйте обновить снова через несколько секунд</i>\n\n"
+            f"🔄 <i>Время: {datetime.now().strftime('%H:%M:%S')}</i>"
+        )
+
+        await callback.message.edit_text(
+            error_text,
+            reply_markup=get_trade_history_menu(),
+            parse_mode='HTML'
+        )
 
 
 @router.callback_query(F.data == "refresh_balance")
 async def refresh_balance(callback: CallbackQuery):
-    """Обновление баланса"""
+    """Обновление баланса - теперь с реальным получением данных"""
     if not config.is_user_allowed(callback.from_user.id):
         return
 
-    # Имитируем обновление
-    await callback.answer("🔄 Обновление баланса...")
+    try:
+        # Показываем уведомление о начале обновления
+        await callback.answer("🔄 Обновление баланса...")
 
-    balance_text = TradeBotUtils.get_balance_text(callback.from_user.id)
+        # Показываем индикатор загрузки
+        await callback.message.edit_text(
+            "💰 <b>Баланс счёта Bybit</b>\n\n"
+            "🔄 <b>Обновление баланса...</b>\n\n"
+            "⏳ <i>Получение свежих данных с биржи...</i>",
+            parse_mode='HTML'
+        )
 
-    await callback.message.edit_text(
-        balance_text,
-        reply_markup=get_balance_menu(),
-        parse_mode='HTML'
-    )
+        # Небольшая задержка для визуального эффекта
+        await asyncio.sleep(0.5)
+
+        # Получаем обновленный баланс
+        balance_text = await TradeBotUtils.get_balance_text(callback.from_user.id)
+
+        await callback.message.edit_text(
+            balance_text,
+            reply_markup=get_balance_menu(),
+            parse_mode='HTML'
+        )
+
+        logger.info(f"✅ Баланс обновлен для пользователя {callback.from_user.id}")
+
+    except Exception as e:
+        logger.error(f"Ошибка обновления баланса для {callback.from_user.id}: {e}")
+
+        # В случае ошибки показываем сообщение об ошибке
+        error_text = (
+            f"💰 <b>Баланс счёта Bybit</b>\n\n"
+            f"❌ <b>Ошибка обновления баланса</b>\n\n"
+            f"🔧 <i>Проверьте подключение к интернету\n"
+            f"и настройки API ключей</i>\n\n"
+            f"🔄 <i>Попробуйте обновить снова через несколько секунд</i>"
+        )
+
+        await callback.message.edit_text(
+            error_text,
+            reply_markup=get_balance_menu(),
+            parse_mode='HTML'
+        )

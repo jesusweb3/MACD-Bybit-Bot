@@ -2,6 +2,7 @@
 from typing import Dict, Any, Optional
 from ...database.database import db
 from ...utils.logger import logger
+from ...exchange.bybit import BybitClient
 
 
 class TradeBotStatus:
@@ -265,6 +266,7 @@ class TradeBotUtils:
     def get_statistics_text(telegram_id: int) -> str:
         """Текст статистики торговли с реальными данными"""
         from ...strategies import strategy_manager
+        from datetime import datetime
 
         # Получаем историю сделок из БД
         trades = db.get_user_trades_history(telegram_id, limit=100)
@@ -304,17 +306,24 @@ class TradeBotUtils:
                 f"📊 <b>Состояние:</b> {strategy_status.get('position_state', 'Unknown')}"
             )
 
-        pnl_emoji = "💚" if total_pnl > 0 else "💔" if total_pnl < 0 else "💙"
+        # Форматируем P&L с помощью helpers
+        from ...utils.helpers import format_pnl, format_percentage
+        pnl_formatted = format_pnl(total_pnl, with_currency=False)
+        win_rate_formatted = format_percentage(win_rate, 1)
+
+        # Время обновления
+        update_time = datetime.now().strftime("%H:%M:%S")
 
         return (
             f"📊 <b>Статистика торговли</b>\n\n"
-            f"{pnl_emoji} <b>Общий P&L:</b> {total_pnl:+.2f} USDT\n"
+            f"{pnl_formatted} USDT\n"
             f"🔢 <b>Всего сделок:</b> {total_trades}\n"
             f"✅ <b>Закрытых сделок:</b> {closed_trades}\n"
-            f"📈 <b>Прибыльных:</b> {profitable_trades} ({win_rate:.1f}%)\n"
+            f"📈 <b>Прибыльных:</b> {profitable_trades} ({win_rate_formatted})\n"
             f"📉 <b>Убыточных:</b> {losing_trades}\n\n"
             f"📊 <b>Текущая позиция:</b> {current_position}"
-            f"{strategy_status_text}"
+            f"{strategy_status_text}\n\n"
+            f"🔄 <i>Обновлено: {update_time}</i>"
         )
 
     @staticmethod
@@ -381,9 +390,10 @@ class TradeBotUtils:
         return entry_tf == exit_tf and entry_tf is not None
 
     @staticmethod
-    def get_balance_text(telegram_id: int) -> str:
-        """Текст баланса счёта"""
+    async def get_balance_text(telegram_id: int) -> str:
+        """Получение реального баланса счёта через Bybit API"""
         from ...strategies import strategy_manager
+        from datetime import datetime
 
         # Проверяем API настройки
         user_settings = db.get_user_settings(telegram_id)
@@ -396,29 +406,91 @@ class TradeBotUtils:
                 f"для отображения реального баланса</i>"
             )
 
-        # Проверяем активную стратегию
-        is_active = strategy_manager.is_strategy_active(telegram_id)
-        strategy_text = ""
+        # Создаем Bybit клиент для получения баланса
+        api_key = user_settings.get('bybit_api_key')
+        secret_key = user_settings.get('bybit_secret_key')
 
-        if is_active:
-            strategy_status = strategy_manager.get_strategy_status(telegram_id)
-            strategy_text = (
-                f"\n🤖 <b>Активная стратегия:</b> {strategy_status.get('strategy_name', 'Unknown')}\n"
-                f"📊 <b>Размер позиции:</b> {strategy_status.get('position_size', 'Unknown')}"
-            )
+        try:
+            logger.info(f"Получение баланса для пользователя {telegram_id}")
 
-        # Пока заглушка, в будущем будет получать реальный баланс через Bybit API
-        return (
-            f"💰 <b>Баланс счёта Bybit</b>\n\n"
-            f"💵 <b>Общий баланс:</b> 0.00 USDT\n"
-            f"✅ <b>Доступно:</b> 0.00 USDT\n"
-            f"🔒 <b>В позициях:</b> 0.00 USDT\n"
-            f"📊 <b>Нереализованный P&L:</b> +0.00 USDT\n\n"
-            f"🔄 <i>Обновлено: только что</i>\n"
-            f"⚠️ <i>Функция получения реального баланса\n"
-            f"будет добавлена в следующих версиях</i>"
-            f"{strategy_text}"
-        )
+            # Используем async context manager для правильного управления ресурсами
+            async with BybitClient(api_key, secret_key) as bybit_client:
+                # Получаем баланс
+                balance_result = await bybit_client.balance.get_balance()
+
+                # Форматируем результат
+                total_usdt = balance_result.get('total_usdt', 0.0)
+                free_usdt = balance_result.get('free_usdt', 0.0)
+                used_usdt = balance_result.get('used_usdt', 0.0)
+
+                # Эмодзи для баланса
+                from ...utils.helpers import get_balance_emoji, format_balance
+                balance_emoji = get_balance_emoji(total_usdt)
+
+                # Форматируем числа
+                total_formatted = format_balance(total_usdt)
+                free_formatted = format_balance(free_usdt)
+                used_formatted = format_balance(used_usdt)
+
+                # Получаем информацию об активной стратегии
+                strategy_text = ""
+                is_active = strategy_manager.is_strategy_active(telegram_id)
+
+                if is_active:
+                    strategy_status = strategy_manager.get_strategy_status(telegram_id)
+                    position_size_info = db.get_position_size_info(telegram_id)
+                    position_size = position_size_info.get('display', 'Unknown')
+
+                    strategy_text = (
+                        f"\n🤖 <b>Активная стратегия:</b> {strategy_status.get('strategy_name', 'Unknown')}\n"
+                        f"📊 <b>Размер позиции:</b> {position_size}\n"
+                        f"🎯 <b>Состояние:</b> {strategy_status.get('position_state', 'Unknown')}"
+                    )
+
+                # Время обновления
+                update_time = datetime.now().strftime("%H:%M:%S")
+
+                result_text = (
+                    f"💰 <b>Баланс счёта Bybit</b>\n\n"
+                    f"{balance_emoji} <b>Общий баланс:</b> {total_formatted} USDT\n"
+                    f"✅ <b>Доступно:</b> {free_formatted} USDT\n"
+                    f"🔒 <b>В позициях:</b> {used_formatted} USDT\n\n"
+                    f"🔄 <i>Обновлено: {update_time}</i>"
+                    f"{strategy_text}"
+                )
+
+                logger.info(f"✅ Баланс получен для {telegram_id}: {total_formatted} USDT")
+                return result_text
+
+        except Exception as e:
+            error_msg = str(e).lower()
+            logger.error(f"❌ Ошибка получения баланса для {telegram_id}: {e}")
+
+            # Определяем тип ошибки для пользователя
+            if "api" in error_msg and ("key" in error_msg or "sign" in error_msg):
+                error_text = (
+                    f"💰 <b>Баланс счёта Bybit</b>\n\n"
+                    f"🔑 <b>Ошибка API ключей</b>\n\n"
+                    f"❌ Неверные API ключи или подпись\n"
+                    f"🔧 Проверьте правильность ключей в настройках\n"
+                    f"⚠️ Убедитесь, что ключи имеют права на чтение баланса"
+                )
+            elif "network" in error_msg or "connection" in error_msg or "timeout" in error_msg:
+                error_text = (
+                    f"💰 <b>Баланс счёта Bybit</b>\n\n"
+                    f"🌐 <b>Ошибка подключения</b>\n\n"
+                    f"❌ Не удалось подключиться к Bybit\n"
+                    f"🔄 Попробуйте обновить баланс через несколько секунд"
+                )
+            else:
+                error_text = (
+                    f"💰 <b>Баланс счёта Bybit</b>\n\n"
+                    f"⚠️ <b>Ошибка получения баланса</b>\n\n"
+                    f"❌ {str(e)[:100]}{'...' if len(str(e)) > 100 else ''}\n"
+                    f"🔧 Проверьте настройки API ключей"
+                )
+
+            return error_text
 
     @staticmethod
     def get_active_strategy_info(telegram_id: int) -> Dict[str, Any]:
