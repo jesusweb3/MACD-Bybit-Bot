@@ -51,23 +51,6 @@ async def start_menu_callback(callback: CallbackQuery):
     await callback.answer()
 
 
-# Заглушка для торговли
-@router.callback_query(F.data == "trade_menu")
-async def trade_menu_callback(callback: CallbackQuery):
-    """Временная заглушка для торгового меню"""
-    if not config.is_user_allowed(callback.from_user.id):
-        logger.warning(f"Unauthorized callback from user {callback.from_user.id} - ignored silently")
-        return
-
-    await callback.message.edit_text(
-        "📈 Торговое меню\n\n"
-        "🚧 Функционал находится в разработке\n\n"
-        "Скоро здесь будут доступны торговые стратегии!",
-        reply_markup=get_back_to_start_menu()
-    )
-    await callback.answer()
-
-
 # Универсальная функция возврата в стартовое меню для других модулей
 async def return_to_start_menu(callback: CallbackQuery, message: str = "🏠 Главное меню\n\nВыберите действие:"):
     """
