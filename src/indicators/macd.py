@@ -250,6 +250,10 @@ class MACDIndicator:
     async def exit_kline_callback(self, kline: Dict[str, Any]):
         """Callback для новых свечей таймфрейма выхода"""
         try:
+            # Для Single TF режима не обрабатываем exit callback отдельно
+            if not self.dual_timeframe:
+                return
+
             # Добавляем новую свечу
             self.exit_klines.append(kline)
 
@@ -314,19 +318,9 @@ class MACDIndicator:
                 )
                 self.exit_stream_active = True
             else:
-                # Если таймфреймы одинаковые, используем один callback для обоих
+                # Если таймфреймы одинаковые, exit_stream считается активным
+                # но используем тот же поток что и для entry
                 self.exit_stream_active = True
-
-                # Создаем объединенный синхронный callback
-                def combined_wrapper(kline: Dict[str, Any]) -> None:
-                    asyncio.create_task(self.entry_kline_callback(kline))
-                    asyncio.create_task(self.exit_kline_callback(kline))
-
-                # Перезапускаем поток с объединенным callback
-                await self.binance_client.stop_kline_stream(self.symbol, self.entry_timeframe)
-                await self.binance_client.start_kline_stream(
-                    self.symbol, self.entry_timeframe, combined_wrapper
-                )
 
             self.is_running = True
             logger.info("✅ MACD индикатор запущен и готов к работе")

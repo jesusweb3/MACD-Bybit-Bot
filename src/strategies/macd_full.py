@@ -117,7 +117,8 @@ class MACDFullStrategy(BaseStrategy):
 
         except Exception as e:
             logger.error(f"Ошибка обработки MACD сигнала: {e}")
-            await self._handle_strategy_error(str(e))
+            # НЕ останавливаем стратегию при ошибках торговли - продолжаем работу
+            logger.warning("⚠️ Стратегия продолжает работу, ожидаем следующий сигнал")
 
     async def _handle_bullish_signal(self, signal: Dict[str, Any]):
         """Обработка бычьего сигнала - переход в лонг"""
@@ -128,6 +129,7 @@ class MACDFullStrategy(BaseStrategy):
             logger.info("📉 Закрываем SHORT позицию")
             close_success = await self._close_position_with_retry("SHORT")
             if not close_success:
+                logger.warning("⚠️ Не удалось закрыть SHORT, пропускаем открытие LONG")
                 return
 
         # Открываем лонг
@@ -137,6 +139,9 @@ class MACDFullStrategy(BaseStrategy):
         if open_success:
             self.position_state = PositionState.LONG_POSITION
             logger.info("✅ Успешно перешли в LONG позицию")
+        else:
+            logger.warning("⚠️ Не удалось открыть LONG позицию, остаемся без позиции")
+            self.position_state = PositionState.NO_POSITION
 
     async def _handle_bearish_signal(self, signal: Dict[str, Any]):
         """Обработка медвежьего сигнала - переход в шорт"""
@@ -147,6 +152,7 @@ class MACDFullStrategy(BaseStrategy):
             logger.info("📈 Закрываем LONG позицию")
             close_success = await self._close_position_with_retry("LONG")
             if not close_success:
+                logger.warning("⚠️ Не удалось закрыть LONG, пропускаем открытие SHORT")
                 return
 
         # Открываем шорт
@@ -156,6 +162,9 @@ class MACDFullStrategy(BaseStrategy):
         if open_success:
             self.position_state = PositionState.SHORT_POSITION
             logger.info("✅ Успешно перешли в SHORT позицию")
+        else:
+            logger.warning("⚠️ Не удалось открыть SHORT позицию, остаемся без позиции")
+            self.position_state = PositionState.NO_POSITION
 
     async def _close_position_with_retry(self, position_type: str) -> bool:
         """Закрытие позиции с повторными попытками"""
@@ -171,10 +180,18 @@ class MACDFullStrategy(BaseStrategy):
                     await self._record_trade_close(position_type, result)
                     return True
                 else:
-                    logger.warning(f"⚠️ Не удалось закрыть позицию: {result.get('error')}")
+                    error_msg = result.get('error', 'Unknown error')
+                    logger.warning(f"⚠️ Не удалось закрыть позицию: {error_msg}")
+
+                    # Логируем детали ошибки для анализа
+                    if "not enough" in error_msg.lower():
+                        logger.error(f"💰 Ошибка баланса при закрытии {position_type}: {error_msg}")
+                    elif "position" in error_msg.lower():
+                        logger.warning(f"📊 Возможно позиция уже закрыта: {error_msg}")
+                        return True  # Считаем успехом если позиция уже закрыта
 
             except Exception as e:
-                logger.error(f"❌ Ошибка закрытия позиции (попытка {attempt}): {e}")
+                logger.error(f"❌ Исключение при закрытии позиции (попытка {attempt}): {e}")
 
             if attempt < self.retry_attempts:
                 logger.info(f"⏳ Ожидание {self.retry_delay}с перед следующей попыткой")
@@ -182,7 +199,6 @@ class MACDFullStrategy(BaseStrategy):
 
         # Все попытки исчерпаны
         logger.error(f"❌ Не удалось закрыть {position_type} позицию за {self.retry_attempts} попыток")
-        await self._handle_strategy_error(f"Не удалось закрыть {position_type} позицию")
         return False
 
     async def _open_long_position(self, signal: Dict[str, Any]) -> bool:
@@ -204,7 +220,17 @@ class MACDFullStrategy(BaseStrategy):
                 await self._record_trade_open('LONG', signal, result)
                 return True
             else:
-                logger.error(f"❌ Ошибка открытия LONG: {result.get('error')}")
+                error_msg = result.get('error', 'Unknown error')
+                logger.error(f"❌ Ошибка открытия LONG: {error_msg}")
+
+                # Детальное логирование для анализа
+                if "not enough" in error_msg.lower():
+                    logger.error(f"💰 Недостаточно средств для LONG позиции размером {self.position_size}")
+                    logger.error(f"🔍 Проверьте баланс на бирже или уменьшите размер позиции")
+                elif "invalid" in error_msg.lower():
+                    logger.error(
+                        f"⚠️ Неверные параметры ордера: символ={self.current_symbol}, размер={self.position_size}")
+
                 return False
 
         except Exception as e:
@@ -230,7 +256,17 @@ class MACDFullStrategy(BaseStrategy):
                 await self._record_trade_open('SHORT', signal, result)
                 return True
             else:
-                logger.error(f"❌ Ошибка открытия SHORT: {result.get('error')}")
+                error_msg = result.get('error', 'Unknown error')
+                logger.error(f"❌ Ошибка открытия SHORT: {error_msg}")
+
+                # Детальное логирование для анализа
+                if "not enough" in error_msg.lower():
+                    logger.error(f"💰 Недостаточно средств для SHORT позиции размером {self.position_size}")
+                    logger.error(f"🔍 Проверьте баланс на бирже или уменьшите размер позиции")
+                elif "invalid" in error_msg.lower():
+                    logger.error(
+                        f"⚠️ Неверные параметры ордера: символ={self.current_symbol}, размер={self.position_size}")
+
                 return False
 
         except Exception as e:
@@ -317,12 +353,6 @@ class MACDFullStrategy(BaseStrategy):
         """Запись закрытия сделки в историю"""
         # TODO: Реализовать после создания таблицы trade_history
         pass
-
-    async def _handle_strategy_error(self, error_message: str):
-        """Обработка критической ошибки стратегии"""
-        logger.error(f"🚨 Критическая ошибка стратегии: {error_message}")
-        self.error_message = error_message
-        await self.stop(f"Критическая ошибка: {error_message}")
 
     def get_position_info(self) -> Dict[str, Any]:
         """Получение информации о текущей позиции"""

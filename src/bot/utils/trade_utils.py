@@ -95,20 +95,50 @@ class TradeBotUtils:
         is_strategy_active = strategy_manager.is_strategy_active(telegram_id)
 
         if is_strategy_active:
-            # Если стратегия активна - показываем ее статус
+            # Если стратегия активна - показываем красивый статус
             strategy_status = strategy_manager.get_strategy_status(telegram_id)
             strategy_name = strategy_status.get('strategy_name', 'Unknown')
             position_state = strategy_status.get('position_state', 'Unknown')
-            symbol = strategy_status.get('symbol', 'Unknown')
+
+            # Получаем настройки пользователя для отображения
+            user_settings = db.get_user_settings(telegram_id)
+            trading_pair = user_settings.get('trading_pair', 'Unknown') if user_settings else 'Unknown'
+            leverage = user_settings.get('leverage', 'Unknown') if user_settings else 'Unknown'
+            entry_tf = user_settings.get('entry_timeframe', 'Unknown') if user_settings else 'Unknown'
+            exit_tf = user_settings.get('exit_timeframe', 'Unknown') if user_settings else 'Unknown'
+
+            # Размер позиции
+            position_size_info = db.get_position_size_info(telegram_id)
+            position_size = position_size_info.get('display', 'Unknown')
+
+            # TP/SL статус
+            tp_sl_info = db.get_tp_sl_info(telegram_id)
+            tp_sl_status = tp_sl_info.get('display', 'Unknown')
+
+            # Красивое название стратегии
+            strategy_display_names = {
+                'macd_full': 'MACD Full (Long + Short)',
+                'macd_long': 'MACD Long Only',
+                'macd_short': 'MACD Short Only'
+            }
+            strategy_display = strategy_display_names.get(strategy_name, strategy_name)
+
+            # Статус позиции с эмодзи
+            position_display = {
+                'no_position': 'Ожидание сигнала',
+                'long_position': 'LONG позиция',
+                'short_position': 'SHORT позиция'
+            }.get(position_state, position_state)
 
             text = (
                 f"🤖 <b>Торговый бот MACD</b>\n\n"
-                f"🟢 <b>Статус:</b> Активная торговля\n"
-                f"🎯 <b>Стратегия:</b> {strategy_name}\n"
-                f"📊 <b>Позиция:</b> {position_state}\n"
-                f"💰 <b>Символ:</b> {symbol}\n\n"
-                f"✅ <b>Стратегия работает автоматически!</b>\n"
-                f"📈 Следите за уведомлениями о сделках."
+                f"📊 <b>Статус:</b> 🚀 Стратегия запущена!\n\n"
+                f"🎯 <b>Стратегия:</b> {strategy_display}\n"
+                f"💰 <b>Пара:</b> {trading_pair}\n"
+                f"⚡ <b>Плечо:</b> {leverage}x\n"
+                f"📊 <b>Размер:</b> {position_size}\n"
+                f"⚙️ <b>TP/SL:</b> {tp_sl_status}\n"
+                f"⏱️ <b>Вход:</b> {entry_tf} | <b>Выход:</b> {exit_tf}"
             )
 
         else:

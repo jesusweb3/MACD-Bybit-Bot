@@ -164,27 +164,9 @@ async def start_trading(callback: CallbackQuery):
         result = await strategy_manager.start_strategy(callback.from_user.id, strategy_name)
 
         if result['success']:
-            # Успешный запуск
-            strategy_status = strategy_manager.get_strategy_status(callback.from_user.id)
-
-            success_text = (
-                f"🚀 <b>Стратегия запущена!</b>\n\n"
-                f"🎯 <b>Стратегия:</b> {result['strategy_name']}\n"
-                f"🆔 <b>ID:</b> {result['strategy_id']}\n"
-                f"📊 <b>Состояние:</b> {strategy_status.get('position_state', 'Определяется...')}\n"
-                f"⏰ <b>Статус:</b> Активна\n\n"
-                f"✅ <b>{result['message']}</b>\n\n"
-                f"💡 <i>Стратегия работает автоматически.\n"
-                f"Следите за уведомлениями о сделках.</i>"
-            )
-
-            await callback.message.edit_text(
-                success_text,
-                reply_markup=get_active_trading_menu(),
-                parse_mode='HTML'
-            )
-
+            # Успешный запуск - сразу перекидываем в меню активной торговли
             logger.info(f"✅ Пользователь {callback.from_user.id} успешно запустил стратегию {strategy_name}")
+            await active_trading_menu(callback)
 
         else:
             # Ошибка запуска
@@ -310,18 +292,8 @@ async def active_trading_menu(callback: CallbackQuery):
             await callback.answer()
             return
 
-        # Получаем статус активной стратегии
-        strategy_status = strategy_manager.get_strategy_status(callback.from_user.id)
-
-        status_text = (
-            f"🤖 <b>Активная торговля</b>\n\n"
-            f"🎯 <b>Стратегия:</b> {strategy_status.get('strategy_name', 'Unknown')}\n"
-            f"📊 <b>Позиция:</b> {strategy_status.get('position_state', 'Определяется...')}\n"
-            f"💰 <b>Символ:</b> {strategy_status.get('symbol', 'Unknown')}\n"
-            f"📈 <b>Размер:</b> {strategy_status.get('position_size', 'Unknown')}\n"
-            f"⏰ <b>Статус:</b> {strategy_status.get('status', 'Unknown')}\n\n"
-            f"🟢 <i>Стратегия работает автоматически</i>"
-        )
+        # Генерируем текст для активной стратегии (используем существующую функцию)
+        status_text = TradeBotUtils.get_trade_menu_text(callback.from_user.id)
 
         await callback.message.edit_text(
             status_text,

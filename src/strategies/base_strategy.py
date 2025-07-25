@@ -30,6 +30,9 @@ class BaseStrategy(ABC):
         self.stop_time: Optional[datetime] = None
         self.error_message: Optional[str] = None
 
+        # ID пользователя в БД (получаем по telegram_id)
+        self.user_id: Optional[int] = None
+
         # Компоненты стратегии
         self.bybit_client: Optional[BybitClient] = None
         self.macd_indicator: Optional[MACDIndicator] = None
@@ -44,6 +47,11 @@ class BaseStrategy(ABC):
         """Инициализация стратегии"""
         try:
             logger.info(f"Инициализация стратегии {self.strategy_name} для пользователя {self.telegram_id}")
+
+            # Получаем пользователя и его ID в БД
+            user = db.get_or_create_user(self.telegram_id)
+            self.user_id = user['id']
+            logger.debug(f"User ID в БД: {self.user_id}")
 
             # Получаем настройки пользователя
             self.user_settings = db.get_user_settings(self.telegram_id)
@@ -93,9 +101,12 @@ class BaseStrategy(ABC):
                 if not await self.initialize():
                     return False
 
-            # Сохраняем стратегию в БД
+            # Сохраняем стратегию в БД (используем user_id, а не telegram_id)
+            if self.user_id is None:
+                raise Exception("User ID не определен")
+
             self.strategy_id = db.create_active_strategy(
-                telegram_id=self.telegram_id,
+                user_id=self.user_id,  # Используем правильный параметр
                 strategy_name=self.strategy_name
             )
 
