@@ -2,7 +2,7 @@
 import asyncio
 from typing import Dict, Any, Optional
 from enum import Enum
-from .base_strategy import BaseStrategy, StrategyStatus
+from .base_strategy import BaseStrategy
 from ..indicators.macd import MACDIndicator
 from ..utils.logger import logger
 from ..database.database import db
@@ -30,6 +30,9 @@ class MACDFullStrategy(BaseStrategy):
         self.retry_attempts = 3
         self.retry_delay = 1.0  # секунды
 
+        # Правила торговли (получаем из API)
+        self.trading_rules: Optional[Dict[str, Any]] = None
+
     async def _initialize_strategy_components(self) -> bool:
         """Инициализация MACD индикатора для Full стратегии"""
         try:
@@ -52,12 +55,15 @@ class MACDFullStrategy(BaseStrategy):
             if not leverage_result['success']:
                 logger.warning(f"Предупреждение при установке плеча: {leverage_result.get('error', 'Unknown')}")
 
+            # Получаем правила торговли для символа
+            await self._load_trading_rules(symbol)
+
             # Рассчитываем размер позиции
             self.position_size = await self._calculate_position_size()
             if not self.position_size:
                 raise Exception("Не удалось рассчитать размер позиции")
 
-            logger.info(f"Размер позиции: {self.position_size}")
+            logger.info(f"Размер позиции: {self.position_size} ETH")
 
             # Сохраняем текущий символ
             self.current_symbol = symbol
@@ -67,6 +73,44 @@ class MACDFullStrategy(BaseStrategy):
         except Exception as e:
             logger.error(f"Ошибка инициализации компонентов MACD Full: {e}")
             return False
+
+    async def _load_trading_rules(self, symbol: str):
+        """Загрузка правил торговли для символа"""
+        try:
+            logger.info(f"Загружаем правила торговли для {symbol}")
+
+            params = {
+                'category': 'linear',
+                'symbol': symbol
+            }
+
+            response = await self.bybit_client.balance._make_request('GET', '/v5/market/instruments-info', params)
+
+            if response.get('retCode') == 0:
+                result = response.get('result', {})
+                symbols = result.get('list', [])
+
+                if symbols:
+                    symbol_info = symbols[0]
+                    lot_size_filter = symbol_info.get('lotSizeFilter', {})
+
+                    self.trading_rules = {
+                        'min_qty': float(lot_size_filter.get('minOrderQty', 0)),
+                        'max_qty': float(lot_size_filter.get('maxOrderQty', 0)),
+                        'qty_step': float(lot_size_filter.get('qtyStep', 0))
+                    }
+
+                    logger.info(f"Правила торговли {symbol}:")
+                    logger.info(f"  Мин. количество: {self.trading_rules['min_qty']}")
+                    logger.info(f"  Макс. количество: {self.trading_rules['max_qty']}")
+                    logger.info(f"  Шаг количества: {self.trading_rules['qty_step']}")
+                else:
+                    logger.error(f"Символ {symbol} не найден в правилах торговли")
+            else:
+                logger.error(f"Ошибка получения правил торговли: {response.get('retMsg')}")
+
+        except Exception as e:
+            logger.error(f"Ошибка загрузки правил торговли: {e}")
 
     async def _start_strategy_logic(self):
         """Запуск логики MACD Full стратегии"""
@@ -216,6 +260,7 @@ class MACDFullStrategy(BaseStrategy):
 
             if result['success']:
                 logger.info(f"✅ LONG позиция открыта: {result['order_id']}")
+                logger.info(f"📊 Размер: {self.position_size} ETH")
                 # Записываем сделку в историю
                 await self._record_trade_open('LONG', signal, result)
                 return True
@@ -225,11 +270,12 @@ class MACDFullStrategy(BaseStrategy):
 
                 # Детальное логирование для анализа
                 if "not enough" in error_msg.lower():
-                    logger.error(f"💰 Недостаточно средств для LONG позиции размером {self.position_size}")
+                    logger.error(f"💰 Недостаточно средств для LONG позиции размером {self.position_size} ETH")
                     logger.error(f"🔍 Проверьте баланс на бирже или уменьшите размер позиции")
-                elif "invalid" in error_msg.lower():
+                elif "invalid" in error_msg.lower() or "qty" in error_msg.lower():
                     logger.error(
                         f"⚠️ Неверные параметры ордера: символ={self.current_symbol}, размер={self.position_size}")
+                    logger.error(f"🔧 Возможно нужна корректировка размера позиции")
 
                 return False
 
@@ -252,6 +298,7 @@ class MACDFullStrategy(BaseStrategy):
 
             if result['success']:
                 logger.info(f"✅ SHORT позиция открыта: {result['order_id']}")
+                logger.info(f"📊 Размер: {self.position_size} ETH")
                 # Записываем сделку в историю
                 await self._record_trade_open('SHORT', signal, result)
                 return True
@@ -261,11 +308,12 @@ class MACDFullStrategy(BaseStrategy):
 
                 # Детальное логирование для анализа
                 if "not enough" in error_msg.lower():
-                    logger.error(f"💰 Недостаточно средств для SHORT позиции размером {self.position_size}")
+                    logger.error(f"💰 Недостаточно средств для SHORT позиции размером {self.position_size} ETH")
                     logger.error(f"🔍 Проверьте баланс на бирже или уменьшите размер позиции")
-                elif "invalid" in error_msg.lower():
+                elif "invalid" in error_msg.lower() or "qty" in error_msg.lower():
                     logger.error(
                         f"⚠️ Неверные параметры ордера: символ={self.current_symbol}, размер={self.position_size}")
+                    logger.error(f"🔧 Возможно нужна корректировка размера позиции")
 
                 return False
 
@@ -296,13 +344,26 @@ class MACDFullStrategy(BaseStrategy):
         return tp_price, sl_price
 
     async def _calculate_position_size(self) -> Optional[str]:
-        """Расчет размера позиции на основе настроек пользователя"""
+        """
+        Расчет размера позиции на основе настроек пользователя
+        С ПРАВИЛЬНЫМ округлением для Bybit!
+        """
         try:
             position_info = db.get_position_size_info(self.telegram_id)
+            symbol = self.user_settings.get('trading_pair')
+
+            # Получаем текущую цену
+            price_result = await self.bybit_client.price.get_price(symbol)
+            if not price_result['success']:
+                raise Exception(f"Не удалось получить цену {symbol}")
+
+            current_price = price_result['price']
+            logger.info(f"💲 Текущая цена {symbol}: {current_price}")
 
             if position_info['type'] == 'fixed_usdt':
                 # Фиксированная сумма в USDT
-                return str(position_info['value'])
+                usdt_amount = position_info['value']
+                logger.info(f"💰 Фиксированная сумма: {usdt_amount} USDT")
 
             elif position_info['type'] == 'percentage':
                 # Процент от баланса
@@ -312,10 +373,50 @@ class MACDFullStrategy(BaseStrategy):
                 if balance <= 0:
                     raise Exception("Недостаточно средств на балансе")
 
-                position_usdt = balance * (position_info['value'] / 100)
-                return str(position_usdt)
+                usdt_amount = balance * (position_info['value'] / 100)
+                logger.info(f"💰 {position_info['value']}% от баланса {balance:.2f} = {usdt_amount:.2f} USDT")
 
-            return None
+            else:
+                raise Exception("Неизвестный тип размера позиции")
+
+            # Применяем плечо
+            leverage = self.user_settings.get('leverage', 1)
+            total_volume_usdt = usdt_amount * leverage
+            logger.info(f"📊 Объем с плечом {leverage}x: {total_volume_usdt} USDT")
+
+            # Рассчитываем количество ETH
+            eth_quantity = total_volume_usdt / current_price
+            logger.info(f"⚖️ Количество ETH (точное): {eth_quantity:.8f}")
+
+            # ПРАВИЛЬНОЕ округление для Bybit ETHUSDT
+            # Шаг количества: 0.01, минимум: 0.01
+            if self.trading_rules:
+                min_qty = self.trading_rules.get('min_qty', 0.01)
+                qty_step = self.trading_rules.get('qty_step', 0.01)
+
+                logger.info(f"📏 Правила: мин={min_qty}, шаг={qty_step}")
+
+                # Корректируем по шагу
+                corrected_qty = round(eth_quantity / qty_step) * qty_step
+                # Дополнительно округляем до 2 знаков для избежания ошибок точности
+                corrected_qty = round(corrected_qty, 2)
+
+                # Проверяем минимум
+                if corrected_qty < min_qty:
+                    corrected_qty = min_qty
+                    logger.warning(f"⚠️ Количество скорректировано до минимума: {corrected_qty}")
+
+                logger.info(f"🎯 Скорректированное количество: {corrected_qty} ETH")
+
+                return str(corrected_qty)
+            else:
+                # Fallback: просто округляем до сотых
+                rounded_qty = round(eth_quantity, 2)
+                if rounded_qty < 0.01:
+                    rounded_qty = 0.01
+
+                logger.info(f"🎯 Округленное количество (fallback): {rounded_qty} ETH")
+                return str(rounded_qty)
 
         except Exception as e:
             logger.error(f"Ошибка расчета размера позиции: {e}")
