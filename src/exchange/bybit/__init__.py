@@ -43,8 +43,13 @@ class BybitClient:
         modules = [self.balance, self.leverage, self.price, self.orders, self.positions]
 
         for module in modules:
+            # ИСПРАВЛЕНО: Реально закрываем индивидуальные сессии перед заменой
             if hasattr(module, 'session') and module.session and not module.session.closed:
-                await module.session.close()
+                try:
+                    await module.session.close()
+                except Exception as e:
+                    from ...utils.logger import logger
+                    logger.debug(f"Ошибка закрытия индивидуальной сессии модуля: {e}")
 
             # Устанавливаем общую сессию
             module.session = shared_session
@@ -61,18 +66,31 @@ class BybitClient:
     async def close(self):
         """Закрытие всех модулей и общей сессии"""
         try:
-            # Сначала вызываем close() у всех модулей (но не закрываем сессии)
             modules = [self.balance, self.leverage, self.price, self.orders, self.positions]
 
+            # ИСПРАВЛЕНО: Правильное закрытие всех сессий
             for module in modules:
-                # Очищаем ссылку на сессию в модуле, чтобы избежать двойного закрытия
-                if hasattr(module, 'session'):
-                    module.session = None
+                if hasattr(module, 'session') and module.session:
+                    try:
+                        # Проверяем не закрыта ли уже сессия
+                        if not module.session.closed:
+                            await module.session.close()
+                    except Exception as e:
+                        from ...utils.logger import logger
+                        logger.debug(f"Ошибка закрытия сессии модуля {module.__class__.__name__}: {e}")
+                    finally:
+                        # Обнуляем ссылку в любом случае
+                        module.session = None
 
-            # Закрываем общую сессию только один раз
+            # Закрываем общую сессию
             if self._session and not self._session.closed:
-                await self._session.close()
-                self._session = None
+                try:
+                    await self._session.close()
+                except Exception as e:
+                    from ...utils.logger import logger
+                    logger.debug(f"Ошибка закрытия общей сессии Bybit: {e}")
+                finally:
+                    self._session = None
 
             from ...utils.logger import logger
             logger.debug("Bybit клиент корректно закрыт")
