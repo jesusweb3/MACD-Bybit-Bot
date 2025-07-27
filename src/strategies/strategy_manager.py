@@ -48,9 +48,10 @@ class StrategyManager:
 
             # Проверяем что у пользователя нет активной стратегии
             if telegram_id in self.active_strategies:
+                current_strategy = self.active_strategies[telegram_id]
                 return {
                     'success': False,
-                    'error': 'У вас уже запущена стратегия. Остановите ее перед запуском новой.'
+                    'error': f'У вас уже запущена стратегия {current_strategy.strategy_name}. Остановите ее перед запуском новой.'
                 }
 
             # Проверяем активную стратегию в БД
@@ -75,11 +76,15 @@ class StrategyManager:
 
                 logger.info(f"✅ Стратегия {strategy_name} успешно запущена для {telegram_id}")
 
+                # Добавляем сводку настроек в ответ
+                settings_summary = strategy.get_settings_summary()
+
                 return {
                     'success': True,
                     'strategy_name': strategy_name,
                     'strategy_id': strategy.strategy_id,
-                    'message': f'Стратегия {strategy_name} успешно запущена!'
+                    'message': f'Стратегия {strategy_name} успешно запущена!',
+                    'settings': settings_summary
                 }
             else:
                 error_msg = strategy.error_message or 'Неизвестная ошибка при запуске'
@@ -149,10 +154,14 @@ class StrategyManager:
 
             # Все равно удаляем из активных стратегий
             if telegram_id in self.active_strategies:
+                strategy_name = self.active_strategies[telegram_id].strategy_name
                 del self.active_strategies[telegram_id]
+            else:
+                strategy_name = "неизвестная"
 
             return {
                 'success': False,
+                'strategy_name': strategy_name,
                 'error': f'Ошибка остановки: {str(e)}'
             }
 
@@ -181,6 +190,10 @@ class StrategyManager:
             position_info = strategy.get_position_info()
             status_info.update(position_info)
 
+        # Добавляем сводку настроек
+        settings_summary = strategy.get_settings_summary()
+        status_info['settings'] = settings_summary
+
         status_info['is_active'] = True
         return status_info
 
@@ -192,7 +205,15 @@ class StrategyManager:
         """Получение всех активных стратегий"""
         result = {}
         for telegram_id, strategy in self.active_strategies.items():
-            result[telegram_id] = strategy.get_status_info()
+            status_info = strategy.get_status_info()
+
+            # Добавляем информацию о позиции если доступна
+            if hasattr(strategy, 'get_position_info'):
+                position_info = strategy.get_position_info()
+                status_info.update(position_info)
+
+            result[telegram_id] = status_info
+
         return result
 
     async def stop_all_strategies(self, reason: str = "System shutdown") -> Dict[str, Any]:
@@ -231,6 +252,21 @@ class StrategyManager:
             name: strategy_class is not None
             for name, strategy_class in self.available_strategies.items()
         }
+
+    def cleanup_inactive_strategies(self):
+        """Очистка неактивных стратегий из памяти"""
+        inactive_telegram_ids = []
+
+        for telegram_id, strategy in self.active_strategies.items():
+            if not strategy.is_active:
+                inactive_telegram_ids.append(telegram_id)
+
+        for telegram_id in inactive_telegram_ids:
+            logger.info(f"Удаляем неактивную стратегию для пользователя {telegram_id}")
+            del self.active_strategies[telegram_id]
+
+        if inactive_telegram_ids:
+            logger.info(f"Очищено {len(inactive_telegram_ids)} неактивных стратегий")
 
 
 # Глобальный экземпляр менеджера стратегий

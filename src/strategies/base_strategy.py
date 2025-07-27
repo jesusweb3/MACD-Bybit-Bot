@@ -1,5 +1,4 @@
 # src/strategies/base_strategy.py
-import asyncio
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Dict, Any, Optional
@@ -161,37 +160,76 @@ class BaseStrategy(ABC):
     async def _cleanup(self):
         """Очистка ресурсов"""
         try:
+            # ИСПРАВЛЕНО: Правильный порядок закрытия ресурсов
             if self.macd_indicator:
+                logger.debug("Закрываем MACD индикатор...")
                 await self.macd_indicator.close()
                 self.macd_indicator = None
 
             if self.bybit_client:
+                logger.debug("Закрываем Bybit клиент...")
                 await self.bybit_client.close()
                 self.bybit_client = None
+
+            logger.debug("Ресурсы стратегии очищены")
 
         except Exception as e:
             logger.error(f"Ошибка очистки ресурсов: {e}")
 
     def _validate_settings(self) -> bool:
         """Проверка настроек пользователя"""
+        if not self.user_settings:
+            logger.error("Настройки пользователя отсутствуют")
+            self.error_message = "Настройки пользователя не найдены"
+            return False
+
         required_fields = [
             'bybit_api_key', 'bybit_secret_key', 'trading_pair',
             'leverage', 'entry_timeframe', 'exit_timeframe'
         ]
 
+        missing_fields = []
         for field in required_fields:
-            if not self.user_settings.get(field):
-                logger.error(f"Отсутствует обязательная настройка: {field}")
-                self.error_message = f"Не настроено: {field}"
-                return False
+            value = self.user_settings.get(field)
+            if not value or (isinstance(value, str) and not value.strip()):
+                missing_fields.append(field)
+
+        if missing_fields:
+            logger.error(f"Отсутствуют обязательные настройки: {', '.join(missing_fields)}")
+            self.error_message = f"Не настроено: {', '.join(missing_fields)}"
+            return False
 
         # Проверяем размер позиции
         position_size_info = db.get_position_size_info(self.telegram_id)
         if not position_size_info.get('value') or position_size_info.get('value') <= 0:
-            logger.error("Размер позиции не настроен")
+            logger.error("Размер позиции не настроен или равен нулю")
             self.error_message = "Размер позиции не настроен"
             return False
 
+        # Проверяем корректность leverage
+        leverage = self.user_settings.get('leverage')
+        if not isinstance(leverage, int) or leverage < 1 or leverage > 100:
+            logger.error(f"Некорректное плечо: {leverage}")
+            self.error_message = "Некорректное значение плеча"
+            return False
+
+        # Проверяем корректность таймфреймов
+        entry_tf = self.user_settings.get('entry_timeframe')
+        exit_tf = self.user_settings.get('exit_timeframe')
+
+        valid_timeframes = ['5m', '15m', '45m', '50m', '55m', '1h', '2h', '3h', '4h']
+
+        if entry_tf not in valid_timeframes:
+            logger.error(f"Некорректный таймфрейм входа: {entry_tf}")
+            self.error_message = f"Неподдерживаемый таймфрейм входа: {entry_tf}"
+            return False
+
+        if exit_tf not in valid_timeframes:
+            logger.error(f"Некорректный таймфрейм выхода: {exit_tf}")
+            self.error_message = f"Неподдерживаемый таймфрейм выхода: {exit_tf}"
+            return False
+
+        logger.debug("✅ Все настройки пользователя валидны")
         return True
 
     def get_status_info(self) -> Dict[str, Any]:
@@ -203,7 +241,28 @@ class BaseStrategy(ABC):
             'start_time': self.start_time.isoformat() if self.start_time else None,
             'stop_time': self.stop_time.isoformat() if self.stop_time else None,
             'error_message': self.error_message,
-            'strategy_id': self.strategy_id
+            'strategy_id': self.strategy_id,
+            'telegram_id': self.telegram_id,
+            'user_id': self.user_id
+        }
+
+    def get_settings_summary(self) -> Dict[str, Any]:
+        """Получение краткой сводки настроек стратегии"""
+        if not self.user_settings:
+            return {}
+
+        position_size_info = db.get_position_size_info(self.telegram_id)
+        tp_sl_info = db.get_tp_sl_info(self.telegram_id)
+
+        return {
+            'trading_pair': self.user_settings.get('trading_pair'),
+            'leverage': self.user_settings.get('leverage'),
+            'entry_timeframe': self.user_settings.get('entry_timeframe'),
+            'exit_timeframe': self.user_settings.get('exit_timeframe'),
+            'position_size': position_size_info.get('display', 'не установлен'),
+            'tp_sl_enabled': tp_sl_info.get('enabled', False),
+            'tp_sl_display': tp_sl_info.get('display', 'не настроено'),
+            'bot_duration_hours': self.user_settings.get('bot_duration_hours')
         }
 
     @abstractmethod
