@@ -5,21 +5,14 @@ from ...utils.logger import logger
 
 
 class BybitOrders(BybitBase):
-    """Модуль для размещения маркет ордеров"""
+    """Модуль для размещения маркет ордеров БЕЗ TP/SL"""
 
-    async def place_market_order(self, symbol: str, side: str, qty: str,
-                                 take_profit: float = None, stop_loss: float = None) -> Dict[str, Any]:
+    async def place_market_order(self, symbol: str, side: str, qty: str) -> Dict[str, Any]:
         """
-        Размещение маркет ордера с опциональными TP/SL
+        Размещение простого маркет ордера БЕЗ TP/SL
         """
         try:
-            tp_sl_info = ""
-            if take_profit:
-                tp_sl_info += f" TP={take_profit}"
-            if stop_loss:
-                tp_sl_info += f" SL={stop_loss}"
-
-            logger.info(f"Размещаем маркет ордер {side} {qty} {symbol}{tp_sl_info}")
+            logger.info(f"Размещаем маркет ордер {side} {qty} {symbol}")
 
             params = {
                 'category': 'linear',
@@ -29,11 +22,7 @@ class BybitOrders(BybitBase):
                 'qty': qty
             }
 
-            # Добавляем TP/SL если указаны
-            if take_profit:
-                params['takeProfit'] = str(take_profit)
-            if stop_loss:
-                params['stopLoss'] = str(stop_loss)
+            # УБРАНО: Добавление TP/SL параметров
 
             response = await self._make_request('POST', '/v5/order/create', params)
 
@@ -51,9 +40,7 @@ class BybitOrders(BybitBase):
                 'order_link_id': order_link_id,
                 'symbol': symbol,
                 'side': side,
-                'qty': qty,
-                'take_profit': take_profit,
-                'stop_loss': stop_loss
+                'qty': qty
             }
 
         except Exception as e:
@@ -63,25 +50,21 @@ class BybitOrders(BybitBase):
                 'error': str(e)
             }
 
-    async def buy_market(self, symbol: str, qty: str, take_profit: float = None, stop_loss: float = None) -> Dict[
-        str, Any]:
+    async def buy_market(self, symbol: str, qty: str) -> Dict[str, Any]:
         """
-        Маркет покупка с опциональными TP/SL
+        Маркет покупка БЕЗ TP/SL
         """
-        return await self.place_market_order(symbol, "Buy", qty, take_profit, stop_loss)
+        return await self.place_market_order(symbol, "Buy", qty)
 
-    async def sell_market(self, symbol: str, qty: str, take_profit: float = None, stop_loss: float = None) -> Dict[
-        str, Any]:
+    async def sell_market(self, symbol: str, qty: str) -> Dict[str, Any]:
         """
-        Маркет продажа с опциональными TP/SL
+        Маркет продажа БЕЗ TP/SL
 
         Args:
             symbol: Торговая пара
             qty: Количество
-            take_profit: Цена тейк-профита
-            stop_loss: Цена стоп-лосса
         """
-        return await self.place_market_order(symbol, "Sell", qty, take_profit, stop_loss)
+        return await self.place_market_order(symbol, "Sell", qty)
 
     async def get_order_status(self, symbol: str, order_id: str) -> Dict[str, Any]:
         """

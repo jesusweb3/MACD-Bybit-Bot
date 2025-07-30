@@ -13,10 +13,7 @@ def get_settings_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📊 Размер позиции", callback_data="settings_position_size")
         ],
         [
-            InlineKeyboardButton(text="⚙️ TP/SL", callback_data="settings_tp_sl"),
-            InlineKeyboardButton(text="⏱️ Таймфреймы", callback_data="settings_timeframes")
-        ],
-        [
+            InlineKeyboardButton(text="⏱️ Таймфрейм", callback_data="settings_timeframe"),
             InlineKeyboardButton(text="🕒 Время работы", callback_data="settings_duration")
         ],
         [
@@ -62,53 +59,6 @@ def get_leverage_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
-def get_tp_sl_menu(is_enabled: bool = False) -> InlineKeyboardMarkup:
-    """Меню настройки TP/SL с переключателем"""
-    toggle_text = "🔴 Выключить" if is_enabled else "🟢 Включить"
-    toggle_data = "tp_sl_disable" if is_enabled else "tp_sl_enable"
-
-    keyboard = [
-        [
-            InlineKeyboardButton(text="🎯 Тейк профит", callback_data="set_take_profit"),
-            InlineKeyboardButton(text="🛑 Стоп лосс", callback_data="set_stop_loss")
-        ],
-        [
-            InlineKeyboardButton(text=toggle_text, callback_data=toggle_data)
-        ],
-        [
-            InlineKeyboardButton(text="🔙 Назад", callback_data="settings")
-        ]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-
-def get_timeframes_menu() -> InlineKeyboardMarkup:
-    keyboard = [
-        [
-            InlineKeyboardButton(text="📈 ТФ входа", callback_data="set_entry_timeframe"),
-            InlineKeyboardButton(text="📉 ТФ выхода", callback_data="set_exit_timeframe")
-        ],
-        [
-            InlineKeyboardButton(text="🔙 Назад", callback_data="settings")
-        ]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-
-def get_timeframe_selection() -> InlineKeyboardMarkup:
-    """Клавиатура только с поддерживаемыми таймфреймами: 5m и 45m"""
-    keyboard = [
-        [
-            InlineKeyboardButton(text="5m", callback_data="tf_5m"),
-            InlineKeyboardButton(text="45m", callback_data="tf_45m")
-        ],
-        [
-            InlineKeyboardButton(text="🔙 Назад", callback_data="settings_timeframes")
-        ]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-
 def get_back_to_settings() -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton(text="🔙 К настройкам", callback_data="settings")]
@@ -116,9 +66,15 @@ def get_back_to_settings() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
-def get_back_to_tp_sl() -> InlineKeyboardMarkup:
-    """Кнопка возврата к меню TP/SL"""
+def get_timeframe_menu() -> InlineKeyboardMarkup:
+    """Меню выбора таймфрейма"""
     keyboard = [
-        [InlineKeyboardButton(text="🔙 К TP/SL", callback_data="settings_tp_sl")]
+        [
+            InlineKeyboardButton(text="5m", callback_data="tf_5m"),
+            InlineKeyboardButton(text="45m", callback_data="tf_45m")
+        ],
+        [
+            InlineKeyboardButton(text="🔙 Назад", callback_data="settings")
+        ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)

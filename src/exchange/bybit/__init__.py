@@ -5,6 +5,7 @@ from .leverage import BybitLeverage
 from .price import BybitPrice
 from .orders import BybitOrders
 from .positions import BybitPositions
+from .symbol_info import BybitSymbolInfo
 
 
 # Основной клиент объединяющий все модули
@@ -24,6 +25,7 @@ class BybitClient:
         self.price = BybitPrice(api_key, secret_key)
         self.orders = BybitOrders(api_key, secret_key)
         self.positions = BybitPositions(api_key, secret_key)
+        self.symbol_info = BybitSymbolInfo(api_key, secret_key)  # Новый модуль
 
         from ...utils.logger import logger
         logger.info("Bybit клиент инициализирован для Mainnet")
@@ -40,7 +42,7 @@ class BybitClient:
         shared_session = await self._get_shared_session()
 
         # Закрываем индивидуальные сессии модулей если они есть
-        modules = [self.balance, self.leverage, self.price, self.orders, self.positions]
+        modules = [self.balance, self.leverage, self.price, self.orders, self.positions, self.symbol_info]
 
         for module in modules:
             # ИСПРАВЛЕНО: Реально закрываем индивидуальные сессии перед заменой
@@ -66,7 +68,7 @@ class BybitClient:
     async def close(self):
         """Закрытие всех модулей и общей сессии"""
         try:
-            modules = [self.balance, self.leverage, self.price, self.orders, self.positions]
+            modules = [self.balance, self.leverage, self.price, self.orders, self.positions, self.symbol_info]
 
             # ИСПРАВЛЕНО: Правильное закрытие всех сессий
             for module in modules:
@@ -101,4 +103,4 @@ class BybitClient:
 
 
 # Экспортируем для удобства
-__all__ = ['BybitClient', 'BybitBalance', 'BybitLeverage', 'BybitPrice', 'BybitOrders', 'BybitPositions']
+__all__ = ['BybitClient', 'BybitBalance', 'BybitLeverage', 'BybitPrice', 'BybitOrders', 'BybitPositions', 'BybitSymbolInfo']

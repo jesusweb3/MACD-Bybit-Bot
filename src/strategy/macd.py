@@ -1,6 +1,6 @@
 # src/strategy/macd.py
 import asyncio
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional
 from enum import Enum
 from datetime import datetime, UTC
 from ..indicators.macd import MACDIndicator
@@ -18,12 +18,13 @@ class PositionState(Enum):
 
 class MACDStrategy:
     """
-    MACD Full стратегия с real-time обработкой сигналов
+    MACD Full стратегия с real-time обработкой сигналов БЕЗ TP/SL
 
     Изменения:
     - Real-time пересечения MACD на основе минутных данных
     - Мгновенная реакция на сигналы (не ждем закрытия свечи)
     - Поддержка множественных сигналов внутри одной свечи целевого таймфрейма
+    - УБРАНА логика TP/SL - выход только по сигналам MACD
 
     При бычьем пересечении: закрыть шорт → открыть лонг
     При медвежьем пересечении: закрыть лонг → открыть шорт
@@ -85,15 +86,7 @@ class MACDStrategy:
 
             # Извлекаем основные параметры
             self.symbol = self.user_settings.get('trading_pair')
-            self.timeframe = self.user_settings.get('entry_timeframe')
-
-            # Проверяем что таймфреймы одинаковые для MACD Full
-            entry_tf = self.user_settings.get('entry_timeframe')
-            exit_tf = self.user_settings.get('exit_timeframe')
-
-            if entry_tf != exit_tf:
-                raise Exception(f"Для MACD Full стратегии таймфреймы входа и выхода должны быть одинаковыми. "
-                                f"Текущие: вход={entry_tf}, выход={exit_tf}")
+            self.timeframe = self.user_settings.get('timeframe')
 
             # Инициализируем Bybit клиент
             api_key = self.user_settings.get('bybit_api_key')
@@ -148,7 +141,7 @@ class MACDStrategy:
 
         required_fields = [
             'bybit_api_key', 'bybit_secret_key', 'trading_pair',
-            'leverage', 'entry_timeframe', 'exit_timeframe'
+            'leverage', 'timeframe'
         ]
 
         missing_fields = []
@@ -176,20 +169,13 @@ class MACDStrategy:
             self.error_message = "Некорректное значение плеча"
             return False
 
-        # Проверяем таймфреймы
-        entry_tf = self.user_settings.get('entry_timeframe')
-        exit_tf = self.user_settings.get('exit_timeframe')
-
+        # Проверяем таймфрейм
+        timeframe = self.user_settings.get('timeframe')
         valid_timeframes = ['5m', '45m']
 
-        if entry_tf not in valid_timeframes:
-            logger.error(f"Некорректный таймфрейм входа: {entry_tf}")
-            self.error_message = f"Неподдерживаемый таймфрейм входа: {entry_tf}. Поддерживаются: 5m, 45m"
-            return False
-
-        if exit_tf not in valid_timeframes:
-            logger.error(f"Некорректный таймфрейм выхода: {exit_tf}")
-            self.error_message = f"Неподдерживаемый таймфрейм выхода: {exit_tf}. Поддерживаются: 5m, 45m"
+        if timeframe not in valid_timeframes:
+            logger.error(f"Некорректный таймфрейм: {timeframe}")
+            self.error_message = f"Неподдерживаемый таймфрейм: {timeframe}. Поддерживаются: 5m, 45m"
             return False
 
         logger.debug("✅ Все настройки пользователя валидны")
@@ -231,6 +217,7 @@ class MACDStrategy:
             logger.info(f"📊 Начальное состояние позиции: {self.position_state.value}")
             logger.info(f"📈 Используемый таймфрейм: {self.timeframe}")
             logger.info(f"⚡ Режим: Real-time с обновлениями каждую минуту")
+            logger.info(f"🎯 TP/SL: ОТКЛЮЧЕНЫ - выход только по сигналам MACD")
 
             return True
 
@@ -416,24 +403,19 @@ class MACDStrategy:
         return False
 
     async def _open_long_position(self, signal: Dict[str, Any]) -> bool:
-        """Открытие лонг позиции"""
+        """Открытие лонг позиции БЕЗ TP/SL"""
         try:
-            # Получаем TP/SL настройки
-            tp_price, sl_price = self._calculate_tp_sl_prices(signal['price'], 'long')
-
             async with self.bybit_client as client:
                 result = await client.orders.buy_market(
                     symbol=self.symbol,
-                    qty=self.position_size,
-                    take_profit=tp_price,
-                    stop_loss=sl_price
+                    qty=self.position_size
+                    # УБРАНО: take_profit=tp_price, stop_loss=sl_price
                 )
 
             if result['success']:
                 logger.info(f"✅ LONG позиция открыта: {result['order_id']}")
                 logger.info(f"📊 Размер: {self.position_size}")
-                if tp_price:
-                    logger.info(f"🎯 TP: {tp_price}, SL: {sl_price}")
+                logger.info(f"🎯 Выход: только по сигналам MACD")
 
                 await self._record_trade_open('LONG', signal, result)
                 return True
@@ -447,24 +429,19 @@ class MACDStrategy:
             return False
 
     async def _open_short_position(self, signal: Dict[str, Any]) -> bool:
-        """Открытие шорт позиции"""
+        """Открытие шорт позиции БЕЗ TP/SL"""
         try:
-            # Получаем TP/SL настройки
-            tp_price, sl_price = self._calculate_tp_sl_prices(signal['price'], 'short')
-
             async with self.bybit_client as client:
                 result = await client.orders.sell_market(
                     symbol=self.symbol,
-                    qty=self.position_size,
-                    take_profit=tp_price,
-                    stop_loss=sl_price
+                    qty=self.position_size
+                    # УБРАНО: take_profit=tp_price, stop_loss=sl_price
                 )
 
             if result['success']:
                 logger.info(f"✅ SHORT позиция открыта: {result['order_id']}")
                 logger.info(f"📊 Размер: {self.position_size}")
-                if tp_price:
-                    logger.info(f"🎯 TP: {tp_price}, SL: {sl_price}")
+                logger.info(f"🎯 Выход: только по сигналам MACD")
 
                 await self._record_trade_open('SHORT', signal, result)
                 return True
@@ -477,30 +454,10 @@ class MACDStrategy:
             logger.error(f"❌ Исключение при открытии SHORT: {e}")
             return False
 
-    def _calculate_tp_sl_prices(self, entry_price: float, side: str) -> Tuple[Optional[float], Optional[float]]:
-        """Расчет цен TP/SL"""
-        tp_sl_info = db.get_tp_sl_info(self.telegram_id)
-
-        if not tp_sl_info['enabled']:
-            return None, None
-
-        take_profit_points = tp_sl_info.get('take_profit')
-        stop_loss_points = tp_sl_info.get('stop_loss')
-
-        if not take_profit_points or not stop_loss_points:
-            return None, None
-
-        if side == 'long':
-            tp_price = entry_price + take_profit_points
-            sl_price = entry_price - stop_loss_points
-        else:  # short
-            tp_price = entry_price - take_profit_points
-            sl_price = entry_price + stop_loss_points
-
-        return tp_price, sl_price
+    # УДАЛЕНА ФУНКЦИЯ _calculate_tp_sl_prices() - больше не нужна
 
     async def _calculate_position_size(self) -> Optional[str]:
-        """Расчет размера позиции на основе настроек пользователя с правильным форматированием"""
+        """Расчет размера позиции на основе настроек пользователя с получением данных от биржи"""
         try:
             position_info = db.get_position_size_info(self.telegram_id)
 
@@ -545,74 +502,44 @@ class MACDStrategy:
             quantity = total_volume_usdt / current_price
             logger.info(f"⚖️ Количество {base_asset} (точное): {quantity:.8f}")
 
-            # ПРАВИЛЬНОЕ ОКРУГЛЕНИЕ для разных символов
-            formatted_qty = self._format_quantity_for_symbol(quantity, self.symbol)
+            # ИСПОЛЬЗУЕМ РЕАЛЬНЫЕ ДАННЫЕ ОТ БИРЖИ для форматирования
+            async with self.bybit_client as client:
+                format_result = await client.symbol_info.format_quantity_for_symbol(self.symbol, quantity)
 
-            logger.info(f"🎯 Отформатированное количество: {formatted_qty} {base_asset}")
-            return formatted_qty
+                if format_result['success']:
+                    formatted_qty = format_result['formatted_quantity']
+                    logger.info(f"📊 Данные от биржи для {self.symbol}:")
+                    logger.info(f"   Минимальное количество: {format_result['min_qty']}")
+                    logger.info(f"   Шаг количества: {format_result['qty_step']}")
+                    logger.info(f"   Точность: {format_result['precision']} знаков")
+                    logger.info(f"🎯 Отформатированное количество: {formatted_qty} {base_asset}")
+                    return formatted_qty
+                else:
+                    logger.error(f"❌ Ошибка получения данных символа: {format_result['error']}")
+                    # Fallback к старому методу
+                    formatted_qty = self._format_quantity_for_symbol_fallback(quantity, self.symbol)
+                    logger.warning(f"⚠️ Используем fallback форматирование: {formatted_qty}")
+                    return formatted_qty
 
         except Exception as e:
             logger.error(f"Ошибка расчета размера позиции: {e}")
             return None
 
-    def _format_quantity_for_symbol(self, quantity: float, symbol: str) -> str:
-        """Форматирование количества согласно требованиям Bybit для конкретного символа"""
+    def _format_quantity_for_symbol_fallback(self, quantity: float, symbol: str) -> str:
+        """Fallback форматирование если API недоступен"""
         base_asset = symbol.replace('USDT', '')
 
-        # Карта точности для популярных символов Bybit
-        precision_map = {
-            'BTC': 5,  # 0.00001
-            'ETH': 4,  # 0.0001
-            'BNB': 3,  # 0.001
-            'ADA': 1,  # 0.1
-            'DOT': 2,  # 0.01
-            'LINK': 2,  # 0.01
-            'UNI': 2,  # 0.01
-            'AVAX': 2,  # 0.01
-            'MATIC': 1,  # 0.1
-            'SOL': 3,  # 0.001
-            'ATOM': 2,  # 0.01
-            'FTM': 1,  # 0.1
-            'NEAR': 2,  # 0.01
-            'ALGO': 1,  # 0.1
-            'XRP': 1,  # 0.1
-            'LTC': 4,  # 0.0001
-            'BCH': 4,  # 0.0001
-            'ETC': 3,  # 0.001
-            'DOGE': 0  # 1 (целые числа)
-        }
-
-        # Получаем точность для символа (по умолчанию 3)
-        precision = precision_map.get(base_asset, 3)
-
-        # Округляем до нужной точности
-        rounded_qty = round(quantity, precision)
-
-        # Минимальные размеры позиций для популярных символов
-        min_qty_map = {
-            'BTC': 0.00001,
-            'ETH': 0.0001,
-            'BNB': 0.001,
-            'ADA': 0.1,
-            'SOL': 0.001,
-            'DOGE': 1,
-            'XRP': 0.1,
-            'MATIC': 0.1
-        }
-
-        min_qty = min_qty_map.get(base_asset, 10 ** (-precision))
-
-        # Проверяем минимальный размер
-        if rounded_qty < min_qty:
-            logger.warning(f"⚠️ Количество {rounded_qty} меньше минимального {min_qty}, устанавливаем минимум")
-            rounded_qty = min_qty
-
-        # Форматируем как строку без лишних нулей
-        if precision == 0:
-            return str(int(rounded_qty))
+        # Консервативные настройки для популярных символов
+        if base_asset == 'BTC':
+            return f"{round(quantity, 5):.5f}".rstrip('0').rstrip('.')
+        elif base_asset == 'ETH':
+            return f"{round(quantity, 4):.4f}".rstrip('0').rstrip('.')
+        elif base_asset in ['BNB', 'SOL']:
+            return f"{round(quantity, 3):.3f}".rstrip('0').rstrip('.')
         else:
-            formatted = f"{rounded_qty:.{precision}f}".rstrip('0').rstrip('.')
-            return formatted if formatted else f"{min_qty:.{precision}f}".rstrip('0').rstrip('.')
+            return f"{round(quantity, 2):.2f}".rstrip('0').rstrip('.')
+
+    # УДАЛЕНА СТАРАЯ ФУНКЦИЯ _format_quantity_for_symbol - заменена на API-based подход
 
     async def _determine_initial_position_state(self):
         """Определение начального состояния позиции"""
@@ -693,15 +620,14 @@ class MACDStrategy:
             return {}
 
         position_size_info = db.get_position_size_info(self.telegram_id)
-        tp_sl_info = db.get_tp_sl_info(self.telegram_id)
 
         return {
             'trading_pair': self.user_settings.get('trading_pair'),
             'leverage': self.user_settings.get('leverage'),
             'timeframe': self.timeframe,
             'position_size': position_size_info.get('display', 'не установлен'),
-            'tp_sl_enabled': tp_sl_info.get('enabled', False),
-            'tp_sl_display': tp_sl_info.get('display', 'не настроено'),
+            'tp_sl_enabled': False,  # Всегда False - TP/SL убрано
+            'tp_sl_display': 'отключено',  # Всегда отключено
             'bot_duration_hours': self.user_settings.get('bot_duration_hours'),
-            'mode': 'Real-time обновления каждую минуту'
+            'mode': 'Real-time обновления каждую минуту БЕЗ TP/SL'
         }

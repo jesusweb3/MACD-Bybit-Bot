@@ -24,11 +24,11 @@ class TradeBotUtils:
         if not user_settings:
             return {
                 'complete': False,
-                'missing_count': 8,
-                'total_count': 8,
+                'missing_count': 6,
+                'total_count': 6,
                 'missing_settings': [
                     'API ключи', 'Торговая пара', 'Плечо', 'Размер позиции',
-                    'TP/SL', 'ТФ входа', 'ТФ выхода', 'Время работы'
+                    'Таймфрейм', 'Время работы'
                 ]
             }
 
@@ -51,25 +51,16 @@ class TradeBotUtils:
         if not position_size_info.get('value') or position_size_info.get('value') <= 0:
             missing_settings.append('Размер позиции')
 
-        # Проверяем TP/SL (опционально, но если включено - должно быть настроено)
-        tp_sl_info = db.get_tp_sl_info(telegram_id)
-        if tp_sl_info['enabled'] and not (tp_sl_info['take_profit'] and tp_sl_info['stop_loss']):
-            missing_settings.append('TP/SL')
-
-        # Проверяем таймфреймы - ТОЛЬКО 5m и 45m
-        entry_tf = user_settings.get('entry_timeframe')
-        if not entry_tf or entry_tf not in ['5m', '45m']:
-            missing_settings.append('ТФ входа')
-
-        exit_tf = user_settings.get('exit_timeframe')
-        if not exit_tf or exit_tf not in ['5m', '45m']:
-            missing_settings.append('ТФ выхода')
+        # Проверяем таймфрейм
+        timeframe = user_settings.get('timeframe')
+        if not timeframe or timeframe not in ['5m', '45m']:
+            missing_settings.append('Таймфрейм')
 
         # Проверяем время работы
         if not user_settings.get('bot_duration_hours'):
             missing_settings.append('Время работы')
 
-        total_count = 8
+        total_count = 6  # Уменьшили с 7 до 6, убрали TP/SL
         missing_count = len(missing_settings)
         complete = missing_count == 0
 
@@ -102,15 +93,11 @@ class TradeBotUtils:
             user_settings = db.get_user_settings(telegram_id)
             trading_pair = user_settings.get('trading_pair', 'Unknown') if user_settings else 'Unknown'
             leverage = user_settings.get('leverage', 'Unknown') if user_settings else 'Unknown'
-            timeframe = user_settings.get('entry_timeframe', 'Unknown') if user_settings else 'Unknown'
+            timeframe = user_settings.get('timeframe', 'Unknown') if user_settings else 'Unknown'
 
             # Размер позиции
             position_size_info = db.get_position_size_info(telegram_id)
             position_size = position_size_info.get('display', 'Unknown')
-
-            # TP/SL статус
-            tp_sl_info = db.get_tp_sl_info(telegram_id)
-            tp_sl_status = tp_sl_info.get('display', 'Unknown')
 
             # Статус позиции с эмодзи
             position_display = {
@@ -126,7 +113,6 @@ class TradeBotUtils:
                 f"💰 <b>Пара:</b> {trading_pair}\n"
                 f"⚡ <b>Плечо:</b> {leverage}x\n"
                 f"📊 <b>Размер:</b> {position_size}\n"
-                f"⚙️ <b>TP/SL:</b> {tp_sl_status}\n"
                 f"⏱️ <b>Таймфрейм:</b> {timeframe}\n"
                 f"📈 <b>Позиция:</b> {position_display}"
             )
@@ -179,16 +165,12 @@ class TradeBotUtils:
         # Информация о настройках
         trading_pair = user_settings.get('trading_pair', 'Не установлена')
         leverage = user_settings.get('leverage', 'Не установлено')
-        timeframe = user_settings.get('entry_timeframe', 'Не установлен')
+        timeframe = user_settings.get('timeframe', 'Не установлен')
         duration = user_settings.get('bot_duration_hours', 'Не установлено')
 
         # Размер позиции
         position_size_info = db.get_position_size_info(telegram_id)
         position_size = position_size_info.get('display', 'Не установлен')
-
-        # TP/SL
-        tp_sl_info = db.get_tp_sl_info(telegram_id)
-        tp_sl_status = tp_sl_info.get('display', 'Не настроено')
 
         text = (
             f"🚀 <b>Подтверждение запуска</b>\n\n"
@@ -197,7 +179,6 @@ class TradeBotUtils:
             f"💰 Пара: {trading_pair}\n"
             f"⚡ Плечо: {leverage}x\n"
             f"📊 Размер: {position_size}\n"
-            f"⚙️ TP/SL: {tp_sl_status}\n"
             f"⏱️ Таймфрейм: {timeframe}\n"
             f"🕒 Работа: {duration}ч\n\n"
             f"❗ <b>Внимание:</b> После запуска бот будет торговать автоматически!\n"
