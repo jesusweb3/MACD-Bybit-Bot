@@ -1,5 +1,5 @@
 # src/bot/utils/trade_utils.py
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from ...database.database import db
 from ...utils.logger import logger
 from ...exchange.bybit import BybitClient
@@ -61,11 +61,13 @@ class TradeBotUtils:
         if tp_sl_info['enabled'] and not (tp_sl_info['take_profit'] and tp_sl_info['stop_loss']):
             missing_settings.append('TP/SL')
 
-        # Проверяем таймфреймы
-        if not user_settings.get('entry_timeframe'):
+        # Проверяем таймфреймы - ТОЛЬКО 5m и 45m
+        entry_tf = user_settings.get('entry_timeframe')
+        if not entry_tf or entry_tf not in ['5m', '45m']:
             missing_settings.append('ТФ входа')
 
-        if not user_settings.get('exit_timeframe'):
+        exit_tf = user_settings.get('exit_timeframe')
+        if not exit_tf or exit_tf not in ['5m', '45m']:
             missing_settings.append('ТФ выхода')
 
         # Проверяем время работы
@@ -386,6 +388,10 @@ class TradeBotUtils:
 
         entry_tf = user_settings.get('entry_timeframe')
         exit_tf = user_settings.get('exit_timeframe')
+
+        # Проверяем что оба таймфрейма поддерживаются
+        if entry_tf not in ['5m', '45m'] or exit_tf not in ['5m', '45m']:
+            return False
 
         return entry_tf == exit_tf and entry_tf is not None
 

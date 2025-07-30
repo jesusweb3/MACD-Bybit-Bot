@@ -96,22 +96,11 @@ def get_timeframes_menu() -> InlineKeyboardMarkup:
 
 
 def get_timeframe_selection() -> InlineKeyboardMarkup:
-    """Клавиатура с поддерживаемыми таймфреймами: 5m, 15m, 45m, 50m, 55m, 1h, 2h, 3h, 4h"""
+    """Клавиатура только с поддерживаемыми таймфреймами: 5m и 45m"""
     keyboard = [
         [
             InlineKeyboardButton(text="5m", callback_data="tf_5m"),
-            InlineKeyboardButton(text="15m", callback_data="tf_15m"),
             InlineKeyboardButton(text="45m", callback_data="tf_45m")
-        ],
-        [
-            InlineKeyboardButton(text="50m", callback_data="tf_50m"),
-            InlineKeyboardButton(text="55m", callback_data="tf_55m"),
-            InlineKeyboardButton(text="1h", callback_data="tf_1h")
-        ],
-        [
-            InlineKeyboardButton(text="2h", callback_data="tf_2h"),
-            InlineKeyboardButton(text="3h", callback_data="tf_3h"),
-            InlineKeyboardButton(text="4h", callback_data="tf_4h")
         ],
         [
             InlineKeyboardButton(text="🔙 Назад", callback_data="settings_timeframes")

@@ -213,20 +213,20 @@ class BaseStrategy(ABC):
             self.error_message = "Некорректное значение плеча"
             return False
 
-        # Проверяем корректность таймфреймов
+        # Проверяем корректность таймфреймов - ТОЛЬКО 5m и 45m
         entry_tf = self.user_settings.get('entry_timeframe')
         exit_tf = self.user_settings.get('exit_timeframe')
 
-        valid_timeframes = ['5m', '15m', '45m', '50m', '55m', '1h', '2h', '3h', '4h']
+        valid_timeframes = ['5m', '45m']
 
         if entry_tf not in valid_timeframes:
             logger.error(f"Некорректный таймфрейм входа: {entry_tf}")
-            self.error_message = f"Неподдерживаемый таймфрейм входа: {entry_tf}"
+            self.error_message = f"Неподдерживаемый таймфрейм входа: {entry_tf}. Поддерживаются: 5m, 45m"
             return False
 
         if exit_tf not in valid_timeframes:
             logger.error(f"Некорректный таймфрейм выхода: {exit_tf}")
-            self.error_message = f"Неподдерживаемый таймфрейм выхода: {exit_tf}"
+            self.error_message = f"Неподдерживаемый таймфрейм выхода: {exit_tf}. Поддерживаются: 5m, 45m"
             return False
 
         logger.debug("✅ Все настройки пользователя валидны")

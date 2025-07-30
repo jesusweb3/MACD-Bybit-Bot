@@ -48,20 +48,26 @@ class BinanceClient:
     def _convert_timeframe(self, timeframe: str) -> str:
         """
         Конвертация таймфрейма в формат Binance
-        УПРОЩЕНО: теперь только стандартные таймфреймы
+        Поддерживаемые: 5m, 15m (для построения 45m)
         """
+        # Маппинг поддерживаемых таймфреймов
         timeframe_map = {
             '5m': '5m',
-            '15m': '15m',
-            '1h': '1h',
-            '2h': '2h'
+            '15m': '15m'
         }
-        return timeframe_map.get(timeframe, timeframe)
+
+        converted = timeframe_map.get(timeframe, timeframe)
+
+        if converted not in ['5m', '15m']:
+            logger.warning(f"Неподдерживаемый таймфрейм: {timeframe}, используем 5m")
+            return '5m'
+
+        return converted
 
     async def get_klines(self, symbol: str, interval: str, limit: int = 500) -> List[Dict[str, Any]]:
         """
         Получение исторических свечей через REST API
-        УПРОЩЕНО: только стандартные таймфреймы
+        Поддерживаемые интервалы: 5m, 15m
         """
         try:
             binance_interval = self._convert_timeframe(interval)
@@ -100,7 +106,7 @@ class BinanceClient:
     async def start_kline_stream(self, symbol: str, interval: str, callback: Callable[[Dict[str, Any]], None]):
         """
         Запуск WebSocket потока для получения закрытых свечей
-        УПРОЩЕНО: только стандартные таймфреймы
+        Поддерживаемые интервалы: 5m, 15m
         """
         try:
             binance_interval = self._convert_timeframe(interval)

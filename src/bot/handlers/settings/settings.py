@@ -693,7 +693,7 @@ async def timeframes_menu(callback: CallbackQuery):
         f"⏱️ Настройка таймфреймов\n\n"
         f"📈 ТФ входа: {entry_text}\n"
         f"📉 ТФ выхода: {exit_text}\n\n"
-        f"Поддерживаемые ТФ: 5m, 15m, 45m, 50m, 55m, 1h, 2h, 3h, 4h",
+        f"Поддерживаемые ТФ: 5m, 45m",
         reply_markup=get_timeframes_menu()
     )
     await callback.answer()
@@ -703,7 +703,7 @@ async def timeframes_menu(callback: CallbackQuery):
 async def set_entry_timeframe(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "📈 Выберите таймфрейм для входа в позицию:\n\n"
-        "Поддерживаемые: 5m, 15m, 45m, 50m, 55m, 1h, 2h, 3h, 4h",
+        "Поддерживаемые: 5m, 45m",
         reply_markup=get_timeframe_selection()
     )
     await state.update_data(setting_type="entry", message_id=callback.message.message_id)
@@ -714,7 +714,7 @@ async def set_entry_timeframe(callback: CallbackQuery, state: FSMContext):
 async def set_exit_timeframe(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "📉 Выберите таймфрейм для выхода из позиции:\n\n"
-        "Поддерживаемые: 5m, 15m, 45m, 50m, 55m, 1h, 2h, 3h, 4h",
+        "Поддерживаемые: 5m, 45m",
         reply_markup=get_timeframe_selection()
     )
     await state.update_data(setting_type="exit", message_id=callback.message.message_id)
@@ -726,6 +726,11 @@ async def process_timeframe(callback: CallbackQuery, state: FSMContext):
     timeframe = callback.data.split("_")[1]
     data = await state.get_data()
     setting_type = data.get("setting_type")
+
+    # Проверяем что таймфрейм поддерживается
+    if timeframe not in ["5m", "45m"]:
+        await callback.answer("❌ Неподдерживаемый таймфрейм", show_alert=True)
+        return
 
     if setting_type == "entry":
         db.update_user_settings(callback.from_user.id, entry_timeframe=timeframe)
@@ -749,7 +754,7 @@ async def process_timeframe(callback: CallbackQuery, state: FSMContext):
         f"⏱️ Настройка таймфреймов\n\n"
         f"📈 ТФ входа: {entry_text}\n"
         f"📉 ТФ выхода: {exit_text}\n\n"
-        f"Поддерживаемые ТФ: 5m, 15m, 45m, 50m, 55m, 1h, 2h, 3h, 4h",
+        f"Поддерживаемые ТФ: 5m, 45m",
         reply_markup=get_timeframes_menu()
     )
 

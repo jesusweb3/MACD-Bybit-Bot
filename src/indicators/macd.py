@@ -11,6 +11,8 @@ class MACDIndicator:
     MACD индикатор с поддержкой двух таймфреймов
     - Таймфрейм входа: для определения входа в позицию
     - Таймфрейм выхода: для определения выхода из позиции
+
+    Поддерживаемые таймфреймы: 5m, 45m
     """
 
     def __init__(self, symbol: str, entry_timeframe: str, exit_timeframe: str,
@@ -19,8 +21,8 @@ class MACDIndicator:
         """
         Args:
             symbol: Торговая пара (BTCUSDT)
-            entry_timeframe: Таймфрейм для входа (45m, 1h и т.д.)
-            exit_timeframe: Таймфрейм для выхода (15m, 30m и т.д.)
+            entry_timeframe: Таймфрейм для входа (5m, 45m)
+            exit_timeframe: Таймфрейм для выхода (5m, 45m)
             fast_period: Период быстрой EMA (по умолчанию 12)
             slow_period: Период медленной EMA (по умолчанию 26)
             signal_period: Период сигнальной линии (по умолчанию 9)
@@ -59,17 +61,8 @@ class MACDIndicator:
         self.entry_stream_active = False
         self.exit_stream_active = False
 
-        # НОВАЯ ЛОГИКА: Состояние для кастомных таймфреймов
-        self.custom_states: Dict[str, Dict[str, Any]] = {}
-
-        # Конфигурация кастомных таймфреймов
-        self.custom_timeframes = {
-            '45m': {'base': '15m', 'count': 3},
-            '50m': {'base': '5m', 'count': 10},
-            '55m': {'base': '5m', 'count': 11},
-            '3h': {'base': '1h', 'count': 3},
-            '4h': {'base': '1h', 'count': 4}
-        }
+        # Состояние для кастомного таймфрейма 45m
+        self.custom_45m_state: Optional[Dict[str, Any]] = None
 
         logger.info(f"MACD инициализирован для {symbol}")
         logger.info(f"Таймфрейм входа: {entry_timeframe}")
@@ -88,21 +81,21 @@ class MACDIndicator:
         self.exit_callbacks.append(callback)
 
     def _is_custom_timeframe(self, timeframe: str) -> bool:
-        """Проверка является ли таймфрейм кастомным"""
-        return timeframe in self.custom_timeframes
+        """Проверка является ли таймфрейм кастомным (только 45m)"""
+        return timeframe == '45m'
 
-    def _init_custom_state(self, timeframe: str, state_key: str):
-        """Инициализация состояния для кастомного таймфрейма"""
-        if state_key not in self.custom_states:
-            config = self.custom_timeframes[timeframe]
-            self.custom_states[state_key] = {
-                'timeframe': timeframe,
-                'base_timeframe': config['base'],
-                'required_count': config['count'],
+    def _init_custom_45m_state(self, state_key: str):
+        """Инициализация состояния для 45m таймфрейма"""
+        if self.custom_45m_state is None:
+            self.custom_45m_state = {
+                'timeframe': '45m',
+                'base_timeframe': '15m',
+                'required_count': 3,
                 'accumulated_klines': [],
-                'current_count': 0
+                'current_count': 0,
+                'state_key': state_key
             }
-            logger.info(f"Инициализировано состояние для {timeframe}: {config['count']} x {config['base']}")
+            logger.info(f"Инициализировано состояние для 45m: 3 x 15m")
 
     @staticmethod
     def calculate_ema(data: pd.Series, period: int) -> pd.Series:
@@ -226,23 +219,18 @@ class MACDIndicator:
 
         return merged
 
-    def _build_custom_klines_from_base(self, base_klines: List[Dict[str, Any]],
-                                       custom_timeframe: str) -> List[Dict[str, Any]]:
+    def _build_45m_klines_from_15m(self, base_klines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        НОВАЯ УНИФИЦИРОВАННАЯ функция построения кастомных свечей из базовых
-        Используется как для исторических данных, так и для проверки логики
+        Построение 45m свечей из 15m базовых свечей
         """
-        if not base_klines or not self._is_custom_timeframe(custom_timeframe):
-            return base_klines
-
-        config = self.custom_timeframes[custom_timeframe]
-        required_count = config['count']
+        if not base_klines:
+            return []
 
         custom_klines = []
         current_batch = []
+        required_count = 3  # 3 x 15m = 45m
 
-        logger.info(f"Строим кастомные свечи {custom_timeframe}: {required_count} x {config['base']}")
-        logger.info(f"Входных базовых свечей: {len(base_klines)}")
+        logger.info(f"Строим 45m свечи из {len(base_klines)} базовых 15m свечей")
 
         for i, kline in enumerate(base_klines):
             current_batch.append(kline)
@@ -252,16 +240,15 @@ class MACDIndicator:
                 merged = self._merge_klines(current_batch)
                 if merged:
                     custom_klines.append(merged)
-                    logger.debug(
-                        f"Создана кастомная свеча {len(custom_klines)} из базовых {i - required_count + 1}-{i}")
+                    logger.debug(f"Создана 45m свеча {len(custom_klines)} из 15m свечей {i - required_count + 1}-{i}")
 
                 current_batch = []
 
         # Если остались неполные данные - НЕ создаем неполную свечу
         if current_batch:
-            logger.info(f"Осталось {len(current_batch)} неполных базовых свечей (не используются)")
+            logger.info(f"Осталось {len(current_batch)} неполных 15m свечей (не используются)")
 
-        logger.info(f"Создано {len(custom_klines)} полных кастомных свечей {custom_timeframe}")
+        logger.info(f"Создано {len(custom_klines)} полных 45m свечей")
         return custom_klines
 
     async def load_historical_data(self):
@@ -269,20 +256,19 @@ class MACDIndicator:
         logger.info(f"Загружаем историю для {self.symbol}")
 
         # Загружаем данные для entry таймфрейма
-        if self._is_custom_timeframe(self.entry_timeframe):
-            config = self.custom_timeframes[self.entry_timeframe]
-            base_timeframe = config['base']
-            base_limit = self.min_history * config['count']
-
-            logger.info(f"Загружаем {base_limit} базовых свечей {base_timeframe} для {self.entry_timeframe}")
-            base_klines = await self.binance_client.get_klines(self.symbol, base_timeframe, base_limit)
+        if self.entry_timeframe == '45m':
+            # Для 45m загружаем 15m свечи и строим кастомные
+            base_limit = self.min_history * 3  # 3 x 15m = 45m
+            logger.info(f"Загружаем {base_limit} базовых 15m свечей для 45m")
+            base_klines = await self.binance_client.get_klines(self.symbol, '15m', base_limit)
 
             if not base_klines:
-                raise Exception(f"Не удалось загрузить базовые данные для {base_timeframe}")
+                raise Exception("Не удалось загрузить базовые данные для 15m")
 
-            self.entry_klines = self._build_custom_klines_from_base(base_klines, self.entry_timeframe)
+            self.entry_klines = self._build_45m_klines_from_15m(base_klines)
         else:
-            logger.info(f"Загружаем {self.min_history} свечей для входа ({self.entry_timeframe})")
+            # Для 5m загружаем напрямую
+            logger.info(f"Загружаем {self.min_history} свечей для входа (5m)")
             self.entry_klines = await self.binance_client.get_klines(
                 self.symbol, self.entry_timeframe, self.min_history
             )
@@ -292,18 +278,17 @@ class MACDIndicator:
 
         # Загружаем данные для exit таймфрейма (если он отличается)
         if self.dual_timeframe:
-            if self._is_custom_timeframe(self.exit_timeframe):
-                config = self.custom_timeframes[self.exit_timeframe]
-                base_timeframe = config['base']
-                base_limit = self.min_history * config['count']
-
-                base_klines = await self.binance_client.get_klines(self.symbol, base_timeframe, base_limit)
+            if self.exit_timeframe == '45m':
+                # Для 45m загружаем 15m свечи и строим кастомные
+                base_limit = self.min_history * 3
+                base_klines = await self.binance_client.get_klines(self.symbol, '15m', base_limit)
                 if not base_klines:
-                    raise Exception(f"Не удалось загрузить базовые данные для {base_timeframe}")
+                    raise Exception("Не удалось загрузить базовые данные для 15m")
 
-                self.exit_klines = self._build_custom_klines_from_base(base_klines, self.exit_timeframe)
+                self.exit_klines = self._build_45m_klines_from_15m(base_klines)
             else:
-                logger.info(f"Загружаем {self.min_history} свечей для выхода ({self.exit_timeframe})")
+                # Для 5m загружаем напрямую
+                logger.info(f"Загружаем {self.min_history} свечей для выхода (5m)")
                 self.exit_klines = await self.binance_client.get_klines(
                     self.symbol, self.exit_timeframe, self.min_history
                 )
@@ -327,8 +312,8 @@ class MACDIndicator:
     async def entry_kline_callback(self, kline: Dict[str, Any]):
         """Callback для новых свечей таймфрейма входа"""
         try:
-            if self._is_custom_timeframe(self.entry_timeframe):
-                await self._process_custom_kline(kline, 'entry')
+            if self.entry_timeframe == '45m':
+                await self._process_45m_kline(kline, 'entry')
             else:
                 await self._process_standard_kline(kline, 'entry')
         except Exception as e:
@@ -341,15 +326,15 @@ class MACDIndicator:
             if not self.dual_timeframe:
                 return
 
-            if self._is_custom_timeframe(self.exit_timeframe):
-                await self._process_custom_kline(kline, 'exit')
+            if self.exit_timeframe == '45m':
+                await self._process_45m_kline(kline, 'exit')
             else:
                 await self._process_standard_kline(kline, 'exit')
         except Exception as e:
             logger.error(f"Ошибка в exit_kline_callback: {e}")
 
     async def _process_standard_kline(self, kline: Dict[str, Any], timeframe_type: str):
-        """Обработка обычной свечи"""
+        """Обработка обычной свечи (5m)"""
         # Добавляем новую свечу
         if timeframe_type == 'entry':
             self.entry_klines.append(kline)
@@ -383,32 +368,31 @@ class MACDIndicator:
                 except Exception as e:
                     logger.error(f"Ошибка в {timeframe_type} callback: {e}")
 
-    async def _process_custom_kline(self, base_kline: Dict[str, Any], timeframe_type: str):
-        """НОВАЯ упрощенная обработка кастомной свечи"""
-        timeframe = self.entry_timeframe if timeframe_type == 'entry' else self.exit_timeframe
-        state_key = f"{self.symbol}_{timeframe}_{timeframe_type}"
+    async def _process_45m_kline(self, base_kline: Dict[str, Any], timeframe_type: str):
+        """Обработка 45m кастомной свечи из 15m базовой"""
+        state_key = f"{self.symbol}_45m_{timeframe_type}"
 
         # Инициализируем состояние если нужно
-        self._init_custom_state(timeframe, state_key)
+        self._init_custom_45m_state(state_key)
 
-        state = self.custom_states[state_key]
+        state = self.custom_45m_state
 
         # Добавляем базовую свечу
         state['accumulated_klines'].append(base_kline)
         state['current_count'] += 1
 
-        logger.debug(f"Накоплено {state['current_count']}/{state['required_count']} базовых свечей для {timeframe}")
+        logger.debug(f"Накоплено {state['current_count']}/3 базовых 15m свечей для 45m")
 
         # Проверяем завершена ли кастомная свеча
-        if state['current_count'] >= state['required_count']:
-            # Берем точно нужное количество свечей
-            klines_for_custom = state['accumulated_klines'][:state['required_count']]
+        if state['current_count'] >= 3:
+            # Берем точно 3 свечи
+            klines_for_custom = state['accumulated_klines'][:3]
 
             # Формируем кастомную свечу
             custom_kline = self._merge_klines(klines_for_custom)
 
             if custom_kline:
-                logger.info(f"✅ Сформирована кастомная свеча {timeframe}")
+                logger.info(f"✅ Сформирована 45m свеча")
 
                 # Добавляем к истории
                 if timeframe_type == 'entry':
@@ -428,7 +412,7 @@ class MACDIndicator:
 
                 # Проверяем сигналы
                 if signal:
-                    logger.info(f"🎯 ПЕРЕСЕЧЕНИЕ! Сигнал {timeframe_type}: {signal['type']} на {timeframe}")
+                    logger.info(f"🎯 ПЕРЕСЕЧЕНИЕ! Сигнал {timeframe_type}: {signal['type']} на 45m")
                     logger.info(f"   Тип пересечения: {signal['crossover_type']}")
                     logger.info(
                         f"   Цена: {signal['price']}, MACD: {signal['macd_line']:.6f} → Signal: {signal['signal_line']:.6f}")
@@ -470,9 +454,7 @@ class MACDIndicator:
                 asyncio.create_task(self.exit_kline_callback(kline))
 
             # Определяем базовый таймфрейм для entry
-            base_entry_tf = (self.custom_timeframes[self.entry_timeframe]['base']
-                             if self._is_custom_timeframe(self.entry_timeframe)
-                             else self.entry_timeframe)
+            base_entry_tf = '15m' if self.entry_timeframe == '45m' else self.entry_timeframe
 
             # Поток для входа
             await self.binance_client.start_kline_stream(self.symbol, base_entry_tf, entry_wrapper)
@@ -480,9 +462,7 @@ class MACDIndicator:
 
             # Поток для выхода (только если таймфреймы разные)
             if self.dual_timeframe:
-                base_exit_tf = (self.custom_timeframes[self.exit_timeframe]['base']
-                                if self._is_custom_timeframe(self.exit_timeframe)
-                                else self.exit_timeframe)
+                base_exit_tf = '15m' if self.exit_timeframe == '45m' else self.exit_timeframe
 
                 # Запускаем только если базовые таймфреймы разные
                 if base_exit_tf != base_entry_tf:
@@ -509,14 +489,10 @@ class MACDIndicator:
 
         try:
             # Определяем базовые таймфреймы для остановки потоков
-            base_entry_tf = (self.custom_timeframes[self.entry_timeframe]['base']
-                             if self._is_custom_timeframe(self.entry_timeframe)
-                             else self.entry_timeframe)
+            base_entry_tf = '15m' if self.entry_timeframe == '45m' else self.entry_timeframe
 
             if self.dual_timeframe:
-                base_exit_tf = (self.custom_timeframes[self.exit_timeframe]['base']
-                                if self._is_custom_timeframe(self.exit_timeframe)
-                                else self.exit_timeframe)
+                base_exit_tf = '15m' if self.exit_timeframe == '45m' else self.exit_timeframe
             else:
                 base_exit_tf = base_entry_tf
 
@@ -529,8 +505,8 @@ class MACDIndicator:
                 await self.binance_client.stop_kline_stream(self.symbol, base_exit_tf)
                 self.exit_stream_active = False
 
-            # Очищаем состояния
-            self.custom_states.clear()
+            # Очищаем состояние
+            self.custom_45m_state = None
 
             self.is_running = False
             logger.info("✅ MACD индикатор остановлен")
@@ -564,7 +540,7 @@ class MACDIndicator:
 
     def get_status(self) -> Dict[str, Any]:
         """Получение статуса индикатора"""
-        return {
+        status = {
             'symbol': self.symbol,
             'entry_timeframe': self.entry_timeframe,
             'exit_timeframe': self.exit_timeframe,
@@ -575,6 +551,11 @@ class MACDIndicator:
             'entry_data_length': len(self.entry_df) if self.entry_df is not None else 0,
             'exit_data_length': len(self.exit_df) if self.exit_df is not None else 0,
             'entry_callbacks': len(self.entry_callbacks),
-            'exit_callbacks': len(self.exit_callbacks),
-            'custom_states': {k: f"{v['current_count']}/{v['required_count']}" for k, v in self.custom_states.items()}
+            'exit_callbacks': len(self.exit_callbacks)
         }
+
+        # Добавляем состояние 45m если есть
+        if self.custom_45m_state:
+            status['custom_45m_state'] = f"{self.custom_45m_state['current_count']}/3"
+
+        return status

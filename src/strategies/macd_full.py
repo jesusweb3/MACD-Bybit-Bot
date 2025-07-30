@@ -21,7 +21,7 @@ class MACDFullStrategy(BaseStrategy):
     При бычьем пересечении: закрыть шорт → открыть лонг
     При медвежьем пересечении: закрыть лонг → открыть шорт
 
-    ИСПРАВЛЕНО: Правильная работа с кастомными таймфреймами
+    Поддерживаемые таймфреймы: 5m, 45m
     """
 
     def __init__(self, telegram_id: int):
@@ -38,7 +38,7 @@ class MACDFullStrategy(BaseStrategy):
     async def _initialize_strategy_components(self) -> bool:
         """Инициализация MACD индикатора для Full стратегии"""
         try:
-            # ИСПРАВЛЕНО: Проверяем что таймфреймы одинаковые для MACD Full
+            # Проверяем что таймфреймы одинаковые для MACD Full
             entry_tf = self.user_settings.get('entry_timeframe')
             exit_tf = self.user_settings.get('exit_timeframe')
 
@@ -49,12 +49,16 @@ class MACDFullStrategy(BaseStrategy):
                 raise Exception(f"Для MACD Full стратегии таймфреймы входа и выхода должны быть одинаковыми. "
                                 f"Текущие: вход={entry_tf}, выход={exit_tf}")
 
+            # Проверяем что таймфрейм поддерживается
+            if entry_tf not in ['5m', '45m']:
+                raise Exception(f"Неподдерживаемый таймфрейм: {entry_tf}. Поддерживаются: 5m, 45m")
+
             symbol = self.user_settings.get('trading_pair')
             if not symbol:
                 raise Exception("Торговая пара не настроена")
 
             logger.info(f"Инициализация MACD для {symbol} на {entry_tf}")
-            logger.info(f"Кастомный ТФ: {'Да' if self._is_custom_timeframe(entry_tf) else 'Нет'}")
+            logger.info(f"Кастомный ТФ: {'Да' if entry_tf == '45m' else 'Нет'}")
 
             # Создаем MACD индикатор (используем одинаковый ТФ для входа и выхода)
             self.macd_indicator = MACDIndicator(
@@ -89,12 +93,6 @@ class MACDFullStrategy(BaseStrategy):
         except Exception as e:
             logger.error(f"Ошибка инициализации компонентов MACD Full: {e}")
             return False
-
-    @staticmethod
-    def _is_custom_timeframe(timeframe: str) -> bool:
-        """Проверка является ли таймфрейм кастомным"""
-        custom_timeframes = ['45m', '50m', '55m', '3h', '4h']
-        return timeframe in custom_timeframes
 
     async def _load_trading_rules(self, symbol: str):
         """Загрузка правил торговли для символа"""
@@ -168,7 +166,7 @@ class MACDFullStrategy(BaseStrategy):
     async def _start_strategy_logic(self):
         """Запуск логики MACD Full стратегии"""
         try:
-            # ИСПРАВЛЕНО: Добавляем callback только для сигналов входа
+            # Добавляем callback только для сигналов входа
             # Поскольку таймфреймы одинаковые, используем только entry callback
             self.macd_indicator.add_entry_callback(self._handle_macd_signal)
 
@@ -392,7 +390,6 @@ class MACDFullStrategy(BaseStrategy):
     async def _calculate_position_size(self) -> Optional[str]:
         """
         Расчет размера позиции на основе настроек пользователя
-        ИСПРАВЛЕНО: Улучшена обработка ошибок
         """
         try:
             position_info = db.get_position_size_info(self.telegram_id)
