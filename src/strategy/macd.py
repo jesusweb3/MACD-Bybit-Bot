@@ -18,7 +18,13 @@ class PositionState(Enum):
 
 class MACDStrategy:
     """
-    MACD Full стратегия - всегда в позиции
+    MACD Full стратегия с real-time обработкой сигналов
+
+    Изменения:
+    - Real-time пересечения MACD на основе минутных данных
+    - Мгновенная реакция на сигналы (не ждем закрытия свечи)
+    - Поддержка множественных сигналов внутри одной свечи целевого таймфрейма
+
     При бычьем пересечении: закрыть шорт → открыть лонг
     При медвежьем пересечении: закрыть лонг → открыть шорт
 
@@ -27,7 +33,7 @@ class MACDStrategy:
 
     def __init__(self, telegram_id: int):
         self.telegram_id = telegram_id
-        self.strategy_name = "MACD Full"
+        self.strategy_name = "MACD Full (Real-time)"
         self.position_state = PositionState.NO_POSITION
         self.is_active = False
 
@@ -51,10 +57,19 @@ class MACDStrategy:
         self.start_time: Optional[datetime] = None
         self.error_message: Optional[str] = None
 
+        # Счетчики для real-time режима
+        self.total_signals_received = 0
+        self.signals_processed = 0
+        self.last_signal_time: Optional[datetime] = None
+
+        # Защита от слишком частых сигналов (debounce)
+        self.min_signal_interval_seconds = 10  # Минимум 10 секунд между сигналами
+        self.last_processed_signal_time: Optional[datetime] = None
+
     async def initialize(self) -> bool:
         """Инициализация стратегии"""
         try:
-            logger.info(f"Инициализация MACD стратегии для пользователя {self.telegram_id}")
+            logger.info(f"Инициализация Real-time MACD стратегии для пользователя {self.telegram_id}")
 
             # Получаем пользователя и настройки
             user = db.get_or_create_user(self.telegram_id)
@@ -108,19 +123,19 @@ class MACDStrategy:
 
             logger.info(f"Размер позиции: {self.position_size}")
 
-            # Инициализируем MACD индикатор
-            logger.info(f"Инициализация MACD для {self.symbol} на {self.timeframe}")
+            # Инициализируем Real-time MACD индикатор
+            logger.info(f"Инициализация Real-time MACD для {self.symbol} на {self.timeframe}")
 
             self.macd_indicator = MACDIndicator(
                 symbol=self.symbol,
                 timeframe=self.timeframe
             )
 
-            logger.info(f"✅ MACD стратегия успешно инициализирована")
+            logger.info(f"✅ Real-time MACD стратегия успешно инициализирована")
             return True
 
         except Exception as e:
-            logger.error(f"❌ Ошибка инициализации MACD стратегии: {e}")
+            logger.error(f"❌ Ошибка инициализации Real-time MACD стратегии: {e}")
             self.error_message = str(e)
             return False
 
@@ -200,26 +215,27 @@ class MACDStrategy:
             self.start_time = datetime.now(UTC)
             self.is_active = True
 
-            logger.info(f"🚀 Запуск MACD стратегии (ID: {self.strategy_id})")
+            logger.info(f"🚀 Запуск Real-time MACD стратегии (ID: {self.strategy_id})")
 
             # Добавляем callback для MACD сигналов
             self.macd_indicator.add_callback(self._handle_macd_signal)
 
-            # Запускаем MACD индикатор
-            logger.info("🚀 Запускаем MACD индикатор...")
+            # Запускаем Real-time MACD индикатор
+            logger.info("🚀 Запускаем Real-time MACD индикатор...")
             await self.macd_indicator.start()
 
             # Определяем начальное состояние позиции
             await self._determine_initial_position_state()
 
-            logger.info(f"🎯 MACD стратегия запущена для {self.symbol}")
+            logger.info(f"🎯 Real-time MACD стратегия запущена для {self.symbol}")
             logger.info(f"📊 Начальное состояние позиции: {self.position_state.value}")
             logger.info(f"📈 Используемый таймфрейм: {self.timeframe}")
+            logger.info(f"⚡ Режим: Real-time с обновлениями каждую минуту")
 
             return True
 
         except Exception as e:
-            logger.error(f"❌ Ошибка запуска MACD стратегии: {e}")
+            logger.error(f"❌ Ошибка запуска Real-time MACD стратегии: {e}")
             self.error_message = str(e)
             self.is_active = False
             return False
@@ -231,11 +247,11 @@ class MACDStrategy:
                 logger.warning("Стратегия уже остановлена")
                 return True
 
-            logger.info(f"⏹️ Остановка MACD стратегии: {reason}")
+            logger.info(f"⏹️ Остановка Real-time MACD стратегии: {reason}")
 
-            # Останавливаем MACD индикатор
+            # Останавливаем Real-time MACD индикатор
             if self.macd_indicator:
-                logger.info("⏹️ Останавливаем MACD индикатор...")
+                logger.info("⏹️ Останавливаем Real-time MACD индикатор...")
                 await self.macd_indicator.stop()
 
             self.is_active = False
@@ -247,57 +263,83 @@ class MACDStrategy:
             # Закрываем соединения
             await self._cleanup()
 
-            logger.info(f"✅ MACD стратегия остановлена")
+            # Логируем статистику
+            logger.info(f"📊 Статистика Real-time режима:")
+            logger.info(f"   Всего сигналов получено: {self.total_signals_received}")
+            logger.info(f"   Сигналов обработано: {self.signals_processed}")
+
+            logger.info(f"✅ Real-time MACD стратегия остановлена")
             return True
 
         except Exception as e:
-            logger.error(f"❌ Ошибка остановки MACD стратегии: {e}")
+            logger.error(f"❌ Ошибка остановки Real-time MACD стратегии: {e}")
             return False
 
     async def _cleanup(self):
         """Очистка ресурсов"""
         try:
             if self.macd_indicator:
-                logger.debug("Закрываем MACD индикатор...")
+                logger.debug("Закрываем Real-time MACD индикатор...")
                 await self.macd_indicator.close()
                 self.macd_indicator = None
 
             # Bybit клиент закрывается автоматически через context manager
 
-            logger.debug("Ресурсы стратегии очищены")
+            logger.debug("Ресурсы Real-time стратегии очищены")
 
         except Exception as e:
             logger.error(f"Ошибка очистки ресурсов: {e}")
 
     async def _handle_macd_signal(self, signal: Dict[str, Any]):
-        """Обработка сигналов MACD"""
+        """Обработка Real-time сигналов MACD с защитой от частых срабатываний"""
         try:
             if not self.is_active:
                 logger.warning("⚠️ Получен сигнал, но стратегия неактивна")
                 return
+
+            # Увеличиваем счетчик полученных сигналов
+            self.total_signals_received += 1
+            self.last_signal_time = datetime.now(UTC)
 
             signal_type = signal.get('type')
             price = signal.get('price')
             crossover_type = signal.get('crossover_type')
             timeframe = signal.get('timeframe')
 
-            logger.info(f"📊 MACD сигнал на {timeframe}: {signal_type} ({crossover_type}) при цене {price}")
+            logger.info(
+                f"📊 Real-time MACD сигнал #{self.total_signals_received} на {timeframe}: {signal_type} ({crossover_type}) при цене {price}")
             logger.info(f"🔄 Текущее состояние: {self.position_state.value}")
 
+            # Проверяем debounce (защита от слишком частых сигналов)
+            if self.last_processed_signal_time:
+                time_since_last = (datetime.now(UTC) - self.last_processed_signal_time).total_seconds()
+                if time_since_last < self.min_signal_interval_seconds:
+                    logger.warning(
+                        f"⚠️ Сигнал проигнорирован (debounce): {time_since_last:.1f}с < {self.min_signal_interval_seconds}с")
+                    return
+
+            # Обрабатываем сигнал
             if signal_type == 'buy':  # Бычье пересечение
                 await self._handle_bullish_signal(signal)
             elif signal_type == 'sell':  # Медвежье пересечение
                 await self._handle_bearish_signal(signal)
             else:
                 logger.warning(f"⚠️ Неизвестный тип сигнала: {signal_type}")
+                return
+
+            # Обновляем время последней обработки
+            self.last_processed_signal_time = datetime.now(UTC)
+            self.signals_processed += 1
+
+            logger.info(f"✅ Real-time сигнал #{self.signals_processed} обработан успешно")
 
         except Exception as e:
-            logger.error(f"Ошибка обработки MACD сигнала: {e}")
+            logger.error(f"Ошибка обработки Real-time MACD сигнала: {e}")
             logger.warning("⚠️ Стратегия продолжает работу, ожидаем следующий сигнал")
 
     async def _handle_bullish_signal(self, signal: Dict[str, Any]):
         """Обработка бычьего сигнала - переход в лонг"""
-        logger.info("🟢 Бычий сигнал: переход в LONG позицию")
+        logger.info("🟢 Real-time бычий сигнал: переход в LONG позицию")
 
         # Закрываем шорт если есть
         if self.position_state == PositionState.SHORT_POSITION:
@@ -313,14 +355,14 @@ class MACDStrategy:
 
         if open_success:
             self.position_state = PositionState.LONG_POSITION
-            logger.info("✅ Успешно перешли в LONG позицию")
+            logger.info("✅ Успешно перешли в LONG позицию (Real-time)")
         else:
             logger.warning("⚠️ Не удалось открыть LONG позицию, остаемся без позиции")
             self.position_state = PositionState.NO_POSITION
 
     async def _handle_bearish_signal(self, signal: Dict[str, Any]):
         """Обработка медвежьего сигнала - переход в шорт"""
-        logger.info("🔴 Медвежий сигнал: переход в SHORT позицию")
+        logger.info("🔴 Real-time медвежий сигнал: переход в SHORT позицию")
 
         # Закрываем лонг если есть
         if self.position_state == PositionState.LONG_POSITION:
@@ -336,7 +378,7 @@ class MACDStrategy:
 
         if open_success:
             self.position_state = PositionState.SHORT_POSITION
-            logger.info("✅ Успешно перешли в SHORT позицию")
+            logger.info("✅ Успешно перешли в SHORT позицию (Real-time)")
         else:
             logger.warning("⚠️ Не удалось открыть SHORT позицию, остаемся без позиции")
             self.position_state = PositionState.NO_POSITION
@@ -555,14 +597,14 @@ class MACDStrategy:
                     quantity=self.position_size,
                     order_id=order_result.get('order_id')
                 )
-                logger.info(f"📝 Записана сделка открытия: ID={trade_id}, сигнал: {signal['type']}")
+                logger.info(f"📝 Записана Real-time сделка открытия: ID={trade_id}, сигнал: {signal['type']}")
         except Exception as e:
             logger.error(f"Ошибка записи сделки открытия: {e}")
 
     async def _record_trade_close(self, side: str, close_result: Dict[str, Any]):
         """Запись закрытия сделки в историю"""
         try:
-            logger.info(f"📝 Сделка {side} закрыта: {close_result.get('order_id')}")
+            logger.info(f"📝 Real-time сделка {side} закрыта: {close_result.get('order_id')}")
         except Exception as e:
             logger.error(f"Ошибка записи закрытия сделки: {e}")
 
@@ -580,7 +622,12 @@ class MACDStrategy:
             'error_message': self.error_message,
             'strategy_id': self.strategy_id,
             'telegram_id': self.telegram_id,
-            'user_id': self.user_id
+            'user_id': self.user_id,
+            # Real-time статистика
+            'total_signals_received': self.total_signals_received,
+            'signals_processed': self.signals_processed,
+            'last_signal_time': self.last_signal_time.isoformat() if self.last_signal_time else None,
+            'min_signal_interval_seconds': self.min_signal_interval_seconds
         }
 
     def get_settings_summary(self) -> Dict[str, Any]:
@@ -598,5 +645,6 @@ class MACDStrategy:
             'position_size': position_size_info.get('display', 'не установлен'),
             'tp_sl_enabled': tp_sl_info.get('enabled', False),
             'tp_sl_display': tp_sl_info.get('display', 'не настроено'),
-            'bot_duration_hours': self.user_settings.get('bot_duration_hours')
+            'bot_duration_hours': self.user_settings.get('bot_duration_hours'),
+            'mode': 'Real-time обновления каждую минуту'
         }
