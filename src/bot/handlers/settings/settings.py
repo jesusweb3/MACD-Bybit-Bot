@@ -179,10 +179,6 @@ async def show_settings_menu_after_update(message: Message, message_id: int):
     position_size_info = db.get_position_size_info(message.from_user.id)
     position_size_display = position_size_info.get('display', '—')
 
-    # TP/SL
-    tp_sl_info = db.get_tp_sl_info(message.from_user.id)
-    tp_sl_display = tp_sl_info.get('display', '—')
-
     settings_text = (
         f"🔧 Настройки бота\n\n"
         f"Настройки заполнены: {filled_count}/{total_count} {progress_bar}\n\n"
@@ -190,7 +186,6 @@ async def show_settings_menu_after_update(message: Message, message_id: int):
         f"💰 Пара: {format_setting_display(user_settings.get('trading_pair'))}\n"
         f"⚡ Плечо: {format_setting_display(user_settings.get('leverage'), 'leverage')}\n"
         f"📊 Размер позиции: {position_size_display}\n"
-        f"⚙️ TP/SL: {tp_sl_display}\n"
         f"⏱️ Таймфрейм: {format_setting_display(user_settings.get('timeframe'))}\n"
         f"🕒 Работа: {format_setting_display(user_settings.get('bot_duration_hours'), 'bot_duration_hours')}"
     )

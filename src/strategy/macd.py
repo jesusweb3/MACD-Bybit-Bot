@@ -25,6 +25,7 @@ class MACDStrategy:
     - Мгновенная реакция на сигналы (не ждем закрытия свечи)
     - Поддержка множественных сигналов внутри одной свечи целевого таймфрейма
     - УБРАНА логика TP/SL - выход только по сигналам MACD
+    - ДОБАВЛЕН динамический пересчет размера позиции перед каждой сделкой
 
     При бычьем пересечении: закрыть шорт → открыть лонг
     При медвежьем пересечении: закрыть лонг → открыть шорт
@@ -48,7 +49,7 @@ class MACDStrategy:
         self.strategy_id: Optional[int] = None
         self.symbol: Optional[str] = None
         self.timeframe: Optional[str] = None
-        self.position_size: Optional[str] = None
+        # УБРАНО: self.position_size - теперь рассчитывается динамически
 
         # Параметры повторных попыток
         self.retry_attempts = 3
@@ -109,12 +110,19 @@ class MACDStrategy:
                 if not leverage_result['success']:
                     logger.warning(f"Предупреждение при установке плеча: {leverage_result.get('error', 'Unknown')}")
 
-            # Рассчитываем размер позиции
-            self.position_size = await self._calculate_position_size()
-            if not self.position_size:
-                raise Exception("Не удалось рассчитать размер позиции")
+            # УБРАНО: Фиксированный расчет размера позиции при инициализации
+            # self.position_size = await self._calculate_position_size()
+            # if not self.position_size:
+            #     raise Exception("Не удалось рассчитать размер позиции")
+            # logger.info(f"Размер позиции: {self.position_size}")
 
-            logger.info(f"Размер позиции: {self.position_size}")
+            # Тестируем расчет размера позиции для проверки настроек
+            test_position_size = await self._calculate_position_size()
+            if not test_position_size:
+                raise Exception("Не удалось рассчитать размер позиции - проверьте настройки")
+
+            logger.info(f"✅ Тестовый расчет размера позиции успешен: {test_position_size}")
+            logger.info(f"💡 Размер будет пересчитываться динамически перед каждой сделкой")
 
             # Инициализируем Real-time MACD индикатор
             logger.info(f"Инициализация Real-time MACD для {self.symbol} на {self.timeframe}")
@@ -217,7 +225,7 @@ class MACDStrategy:
             logger.info(f"📊 Начальное состояние позиции: {self.position_state.value}")
             logger.info(f"📈 Используемый таймфрейм: {self.timeframe}")
             logger.info(f"⚡ Режим: Real-time с обновлениями каждую минуту")
-            logger.info(f"🎯 TP/SL: ОТКЛЮЧЕНЫ - выход только по сигналам MACD")
+            logger.info(f"💹 Размер позиции: динамический пересчет перед каждой сделкой")
 
             return True
 
@@ -403,18 +411,25 @@ class MACDStrategy:
         return False
 
     async def _open_long_position(self, signal: Dict[str, Any]) -> bool:
-        """Открытие лонг позиции БЕЗ TP/SL"""
+        """Открытие лонг позиции БЕЗ TP/SL с динамическим размером"""
         try:
+            # НОВОЕ: Пересчитываем размер позиции с актуальной ценой
+            current_position_size = await self._calculate_position_size()
+            if not current_position_size:
+                logger.error("❌ Не удалось рассчитать актуальный размер позиции")
+                return False
+
+            logger.info(f"💹 Актуальный размер позиции: {current_position_size} (цена сигнала: {signal['price']})")
+
             async with self.bybit_client as client:
                 result = await client.orders.buy_market(
                     symbol=self.symbol,
-                    qty=self.position_size
-                    # УБРАНО: take_profit=tp_price, stop_loss=sl_price
+                    qty=current_position_size  # Используем свежий расчет
                 )
 
             if result['success']:
                 logger.info(f"✅ LONG позиция открыта: {result['order_id']}")
-                logger.info(f"📊 Размер: {self.position_size}")
+                logger.info(f"📊 Размер: {current_position_size}")
                 logger.info(f"🎯 Выход: только по сигналам MACD")
 
                 await self._record_trade_open('LONG', signal, result)
@@ -429,18 +444,25 @@ class MACDStrategy:
             return False
 
     async def _open_short_position(self, signal: Dict[str, Any]) -> bool:
-        """Открытие шорт позиции БЕЗ TP/SL"""
+        """Открытие шорт позиции БЕЗ TP/SL с динамическим размером"""
         try:
+            # НОВОЕ: Пересчитываем размер позиции с актуальной ценой
+            current_position_size = await self._calculate_position_size()
+            if not current_position_size:
+                logger.error("❌ Не удалось рассчитать актуальный размер позиции")
+                return False
+
+            logger.info(f"💹 Актуальный размер позиции: {current_position_size} (цена сигнала: {signal['price']})")
+
             async with self.bybit_client as client:
                 result = await client.orders.sell_market(
                     symbol=self.symbol,
-                    qty=self.position_size
-                    # УБРАНО: take_profit=tp_price, stop_loss=sl_price
+                    qty=current_position_size  # Используем свежий расчет
                 )
 
             if result['success']:
                 logger.info(f"✅ SHORT позиция открыта: {result['order_id']}")
-                logger.info(f"📊 Размер: {self.position_size}")
+                logger.info(f"📊 Размер: {current_position_size}")
                 logger.info(f"🎯 Выход: только по сигналам MACD")
 
                 await self._record_trade_open('SHORT', signal, result)
@@ -454,22 +476,19 @@ class MACDStrategy:
             logger.error(f"❌ Исключение при открытии SHORT: {e}")
             return False
 
-    # УДАЛЕНА ФУНКЦИЯ _calculate_tp_sl_prices() - больше не нужна
-
     async def _calculate_position_size(self) -> Optional[str]:
-        """Расчет размера позиции на основе настроек пользователя с получением данных от биржи"""
+        """Расчет размера позиции на основе настроек пользователя с актуальной ценой"""
         try:
             position_info = db.get_position_size_info(self.telegram_id)
 
-            # Получаем информацию о символе для правильного форматирования
+            # Получаем актуальную цену для точного расчета
             async with self.bybit_client as client:
-                # Получаем текущую цену
                 price_result = await client.price.get_price(self.symbol)
                 if not price_result['success']:
                     raise Exception(f"Не удалось получить цену {self.symbol}: {price_result.get('error')}")
 
                 current_price = price_result['price']
-                logger.info(f"💲 Текущая цена {self.symbol}: {current_price}")
+                logger.info(f"💲 Актуальная цена {self.symbol}: {current_price}")
 
             if position_info['type'] == 'fixed_usdt':
                 # Фиксированная сумма в USDT
@@ -477,7 +496,7 @@ class MACDStrategy:
                 logger.info(f"💰 Фиксированная сумма: {usdt_amount} USDT")
 
             elif position_info['type'] == 'percentage':
-                # Процент от баланса
+                # Процент от баланса - получаем актуальный баланс
                 async with self.bybit_client as client:
                     balance_result = await client.balance.get_balance()
 
@@ -487,7 +506,8 @@ class MACDStrategy:
                     raise Exception("Недостаточно средств на балансе")
 
                 usdt_amount = balance * (position_info['value'] / 100)
-                logger.info(f"💰 {position_info['value']}% от баланса {balance:.2f} = {usdt_amount:.2f} USDT")
+                logger.info(
+                    f"💰 {position_info['value']}% от актуального баланса {balance:.2f} = {usdt_amount:.2f} USDT")
 
             else:
                 raise Exception("Неизвестный тип размера позиции")
@@ -502,17 +522,13 @@ class MACDStrategy:
             quantity = total_volume_usdt / current_price
             logger.info(f"⚖️ Количество {base_asset} (точное): {quantity:.8f}")
 
-            # ИСПОЛЬЗУЕМ РЕАЛЬНЫЕ ДАННЫЕ ОТ БИРЖИ для форматирования
+            # Форматируем с актуальными данными от биржи
             async with self.bybit_client as client:
                 format_result = await client.symbol_info.format_quantity_for_symbol(self.symbol, quantity)
 
                 if format_result['success']:
                     formatted_qty = format_result['formatted_quantity']
-                    logger.info(f"📊 Данные от биржи для {self.symbol}:")
-                    logger.info(f"   Минимальное количество: {format_result['min_qty']}")
-                    logger.info(f"   Шаг количества: {format_result['qty_step']}")
-                    logger.info(f"   Точность: {format_result['precision']} знаков")
-                    logger.info(f"🎯 Отформатированное количество: {formatted_qty} {base_asset}")
+                    logger.info(f"🎯 Отформатированное количество: {formatted_qty} {base_asset} (цена: {current_price})")
                     return formatted_qty
                 else:
                     logger.error(f"❌ Ошибка получения данных символа: {format_result['error']}")
@@ -538,8 +554,6 @@ class MACDStrategy:
             return f"{round(quantity, 3):.3f}".rstrip('0').rstrip('.')
         else:
             return f"{round(quantity, 2):.2f}".rstrip('0').rstrip('.')
-
-    # УДАЛЕНА СТАРАЯ ФУНКЦИЯ _format_quantity_for_symbol - заменена на API-based подход
 
     async def _determine_initial_position_state(self):
         """Определение начального состояния позиции"""
@@ -573,15 +587,23 @@ class MACDStrategy:
         """Запись открытия сделки в историю"""
         try:
             if self.strategy_id and self.user_id:
+                # Получаем количество из результата ордера или рассчитываем актуальное
+                quantity = order_result.get('qty', 'unknown')
+                if quantity == 'unknown':
+                    # Если количество не передано, получаем текущий размер позиции
+                    current_size = await self._calculate_position_size()
+                    quantity = current_size if current_size else 'unknown'
+
                 trade_id = db.create_trade_record(
                     user_id=self.user_id,
                     strategy_id=self.strategy_id,
                     symbol=self.symbol,
                     side=side,
-                    quantity=self.position_size,
+                    quantity=str(quantity),
                     order_id=order_result.get('order_id')
                 )
-                logger.info(f"📝 Записана Real-time сделка открытия: ID={trade_id}, сигнал: {signal['type']}")
+                logger.info(
+                    f"📝 Записана Real-time сделка открытия: ID={trade_id}, сигнал: {signal['type']}, размер: {quantity}")
         except Exception as e:
             logger.error(f"Ошибка записи сделки открытия: {e}")
 
@@ -601,7 +623,7 @@ class MACDStrategy:
             'position_state': self.position_state.value,
             'symbol': self.symbol,
             'timeframe': self.timeframe,
-            'position_size': self.position_size,
+            'position_size': 'dynamic',  # Теперь всегда динамический
             'start_time': self.start_time.isoformat() if self.start_time else None,
             'error_message': self.error_message,
             'strategy_id': self.strategy_id,
@@ -626,8 +648,6 @@ class MACDStrategy:
             'leverage': self.user_settings.get('leverage'),
             'timeframe': self.timeframe,
             'position_size': position_size_info.get('display', 'не установлен'),
-            'tp_sl_enabled': False,  # Всегда False - TP/SL убрано
-            'tp_sl_display': 'отключено',  # Всегда отключено
             'bot_duration_hours': self.user_settings.get('bot_duration_hours'),
-            'mode': 'Real-time обновления каждую минуту БЕЗ TP/SL'
+            'mode': 'Real-time динамический расчет размера'
         }
