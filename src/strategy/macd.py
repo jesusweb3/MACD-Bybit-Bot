@@ -500,19 +500,19 @@ class MACDStrategy:
         return tp_price, sl_price
 
     async def _calculate_position_size(self) -> Optional[str]:
-        """Расчет размера позиции на основе настроек пользователя"""
+        """Расчет размера позиции на основе настроек пользователя с правильным форматированием"""
         try:
             position_info = db.get_position_size_info(self.telegram_id)
 
-            # Получаем текущую цену
+            # Получаем информацию о символе для правильного форматирования
             async with self.bybit_client as client:
+                # Получаем текущую цену
                 price_result = await client.price.get_price(self.symbol)
+                if not price_result['success']:
+                    raise Exception(f"Не удалось получить цену {self.symbol}: {price_result.get('error')}")
 
-            if not price_result['success']:
-                raise Exception(f"Не удалось получить цену {self.symbol}: {price_result.get('error')}")
-
-            current_price = price_result['price']
-            logger.info(f"💲 Текущая цена {self.symbol}: {current_price}")
+                current_price = price_result['price']
+                logger.info(f"💲 Текущая цена {self.symbol}: {current_price}")
 
             if position_info['type'] == 'fixed_usdt':
                 # Фиксированная сумма в USDT
@@ -545,17 +545,74 @@ class MACDStrategy:
             quantity = total_volume_usdt / current_price
             logger.info(f"⚖️ Количество {base_asset} (точное): {quantity:.8f}")
 
-            # Простое округление до 6 знаков
-            corrected_qty = round(quantity, 6)
-            if corrected_qty < 0.000001:
-                corrected_qty = 0.000001
+            # ПРАВИЛЬНОЕ ОКРУГЛЕНИЕ для разных символов
+            formatted_qty = self._format_quantity_for_symbol(quantity, self.symbol)
 
-            logger.info(f"🎯 Округленное количество: {corrected_qty} {base_asset}")
-            return str(corrected_qty)
+            logger.info(f"🎯 Отформатированное количество: {formatted_qty} {base_asset}")
+            return formatted_qty
 
         except Exception as e:
             logger.error(f"Ошибка расчета размера позиции: {e}")
             return None
+
+    def _format_quantity_for_symbol(self, quantity: float, symbol: str) -> str:
+        """Форматирование количества согласно требованиям Bybit для конкретного символа"""
+        base_asset = symbol.replace('USDT', '')
+
+        # Карта точности для популярных символов Bybit
+        precision_map = {
+            'BTC': 5,  # 0.00001
+            'ETH': 4,  # 0.0001
+            'BNB': 3,  # 0.001
+            'ADA': 1,  # 0.1
+            'DOT': 2,  # 0.01
+            'LINK': 2,  # 0.01
+            'UNI': 2,  # 0.01
+            'AVAX': 2,  # 0.01
+            'MATIC': 1,  # 0.1
+            'SOL': 3,  # 0.001
+            'ATOM': 2,  # 0.01
+            'FTM': 1,  # 0.1
+            'NEAR': 2,  # 0.01
+            'ALGO': 1,  # 0.1
+            'XRP': 1,  # 0.1
+            'LTC': 4,  # 0.0001
+            'BCH': 4,  # 0.0001
+            'ETC': 3,  # 0.001
+            'DOGE': 0  # 1 (целые числа)
+        }
+
+        # Получаем точность для символа (по умолчанию 3)
+        precision = precision_map.get(base_asset, 3)
+
+        # Округляем до нужной точности
+        rounded_qty = round(quantity, precision)
+
+        # Минимальные размеры позиций для популярных символов
+        min_qty_map = {
+            'BTC': 0.00001,
+            'ETH': 0.0001,
+            'BNB': 0.001,
+            'ADA': 0.1,
+            'SOL': 0.001,
+            'DOGE': 1,
+            'XRP': 0.1,
+            'MATIC': 0.1
+        }
+
+        min_qty = min_qty_map.get(base_asset, 10 ** (-precision))
+
+        # Проверяем минимальный размер
+        if rounded_qty < min_qty:
+            logger.warning(f"⚠️ Количество {rounded_qty} меньше минимального {min_qty}, устанавливаем минимум")
+            rounded_qty = min_qty
+
+        # Форматируем как строку без лишних нулей
+        if precision == 0:
+            return str(int(rounded_qty))
+        else:
+            formatted = f"{rounded_qty:.{precision}f}".rstrip('0').rstrip('.')
+            return formatted if formatted else f"{min_qty:.{precision}f}".rstrip('0').rstrip('.')
 
     async def _determine_initial_position_state(self):
         """Определение начального состояния позиции"""
