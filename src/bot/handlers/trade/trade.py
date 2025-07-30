@@ -3,7 +3,6 @@ from aiogram import Router, F
 from aiogram.types import CallbackQuery
 from src.bot.keyboards.trade_menu import (
     get_trade_menu,
-    get_strategy_menu,
     get_strategy_confirm_menu,
     get_active_trading_menu,
     get_statistics_menu,
@@ -15,7 +14,7 @@ from ...utils.trade_utils import TradeBotUtils
 from src.utils.logger import logger
 from src.utils.config import config
 from src.database.database import db
-from src.strategies import strategy_manager
+from src.strategy import strategy_manager
 import asyncio
 from datetime import datetime
 
@@ -64,12 +63,12 @@ async def strategy_blocked(callback: CallbackQuery):
         return
 
     # Просто показываем уведомление и НЕ меняем интерфейс
-    await callback.answer("🔒 Завершите настройки для доступа к стратегиям", show_alert=True)
+    await callback.answer("🔒 Завершите настройки для доступа к стратегии", show_alert=True)
 
 
 @router.callback_query(F.data == "trade_strategy_menu")
 async def strategy_menu(callback: CallbackQuery):
-    """Меню выбора стратегии"""
+    """Показ подтверждения запуска MACD стратегии"""
     if not config.is_user_allowed(callback.from_user.id):
         return
 
@@ -78,7 +77,7 @@ async def strategy_menu(callback: CallbackQuery):
 
     if not settings_info['complete']:
         # Если настройки не завершены - показываем уведомление и остаемся в меню
-        await callback.answer("🔒 Завершите настройки для доступа к стратегиям", show_alert=True)
+        await callback.answer("🔒 Завершите настройки для доступа к стратегии", show_alert=True)
         return
 
     # Проверяем есть ли уже активная стратегия
@@ -86,61 +85,24 @@ async def strategy_menu(callback: CallbackQuery):
         await callback.answer("⚠️ У вас уже запущена стратегия. Остановите ее в разделе торговли.", show_alert=True)
         return
 
-    strategy_text = TradeBotUtils.get_strategy_menu_text()
-
-    await callback.message.edit_text(
-        strategy_text,
-        reply_markup=get_strategy_menu(),
-        parse_mode='HTML'
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("strategy_"))
-async def strategy_selected(callback: CallbackQuery):
-    """Обработка выбора стратегии"""
-    if not config.is_user_allowed(callback.from_user.id):
-        return
-
-    strategy_name = callback.data.replace("strategy_", "")
-
-    # Проверяем настройки еще раз
-    settings_info = TradeBotUtils.check_settings_completeness(callback.from_user.id)
-
-    if not settings_info['complete']:
-        await callback.answer("🔒 Завершите настройки для доступа к стратегиям", show_alert=True)
-        return
-
-    # Проверяем есть ли уже активная стратегия
-    if strategy_manager.is_strategy_active(callback.from_user.id):
-        await callback.answer("⚠️ У вас уже запущена стратегия. Остановите ее перед запуском новой.", show_alert=True)
-        return
-
     # Специальная проверка для MACD Full - нужны одинаковые таймфреймы
-    if strategy_name == "macd_full":
-        user_settings = db.get_user_settings(callback.from_user.id)
-        entry_tf = user_settings.get('entry_timeframe') if user_settings else None
-        exit_tf = user_settings.get('exit_timeframe') if user_settings else None
+    user_settings = db.get_user_settings(callback.from_user.id)
+    entry_tf = user_settings.get('entry_timeframe') if user_settings else None
+    exit_tf = user_settings.get('exit_timeframe') if user_settings else None
 
-        if entry_tf != exit_tf:
-            await callback.answer("⚠️ Для MACD Full настройте одинаковые ТФ для входа и выхода", show_alert=True)
-            return
-
-    # Проверяем доступность стратегии
-    available_strategies = strategy_manager.get_available_strategies()
-    if not available_strategies.get(strategy_name, False):
-        await callback.answer("⚠️ Эта стратегия еще не реализована", show_alert=True)
+    if entry_tf != exit_tf:
+        await callback.answer("⚠️ Для MACD стратегии настройте одинаковые ТФ для входа и выхода", show_alert=True)
         return
 
-    # Генерируем текст подтверждения
-    confirm_text = TradeBotUtils.get_strategy_confirm_text(strategy_name, callback.from_user.id)
+    # Генерируем текст подтверждения для MACD стратегии
+    confirm_text = TradeBotUtils.get_strategy_confirm_text("macd_full", callback.from_user.id)
 
     await callback.message.edit_text(
         confirm_text,
-        reply_markup=get_strategy_confirm_menu(strategy_name),
+        reply_markup=get_strategy_confirm_menu("macd_full"),
         parse_mode='HTML'
     )
-    await callback.answer(f"Стратегия {strategy_name} выбрана")
+    await callback.answer("MACD стратегия выбрана")
 
 
 @router.callback_query(F.data.startswith("start_trading_"))
@@ -149,7 +111,8 @@ async def start_trading(callback: CallbackQuery):
     if not config.is_user_allowed(callback.from_user.id):
         return
 
-    strategy_name = callback.data.replace("start_trading_", "")
+    # Убираем strategy_name из callback_data, так как теперь всегда MACD
+    strategy_name = "MACD Full"
 
     try:
         # Показываем сообщение о запуске
@@ -162,8 +125,8 @@ async def start_trading(callback: CallbackQuery):
         )
         await callback.answer()
 
-        # РЕАЛЬНЫЙ ЗАПУСК СТРАТЕГИИ
-        result = await strategy_manager.start_strategy(callback.from_user.id, strategy_name)
+        # РЕАЛЬНЫЙ ЗАПУСК СТРАТЕГИИ (без параметра strategy_name)
+        result = await strategy_manager.start_strategy(callback.from_user.id)
 
         if result['success']:
             # Успешный запуск - сразу перекидываем в меню активной торговли
@@ -215,7 +178,7 @@ async def stop_trading(callback: CallbackQuery):
 
         # Получаем информацию о текущей стратегии
         strategy_status = strategy_manager.get_strategy_status(callback.from_user.id)
-        strategy_name = strategy_status.get('strategy_name', 'Unknown')
+        strategy_name = strategy_status.get('strategy_name', 'MACD Full')
 
         # Показываем сообщение об остановке
         await callback.message.edit_text(
@@ -294,7 +257,7 @@ async def active_trading_menu(callback: CallbackQuery):
             await callback.answer()
             return
 
-        # Генерируем текст для активной стратегии (используем существующую функцию)
+        # Генерируем текст для активной стратегии
         status_text = TradeBotUtils.get_trade_menu_text(callback.from_user.id)
 
         await callback.message.edit_text(

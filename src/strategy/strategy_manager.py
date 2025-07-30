@@ -1,51 +1,27 @@
-# src/strategies/strategy_manager.py
+# src/strategy/strategy_manager.py
 from typing import Dict, Optional, Any
-from .base_strategy import BaseStrategy
-from .macd_full import MACDFullStrategy
+from .macd import MACDStrategy
 from ..utils.logger import logger
-from ..database.database import db
 
 
 class StrategyManager:
-    """Менеджер для управления активными стратегиями"""
+    """Упрощенный менеджер для управления MACD стратегиями"""
 
     def __init__(self):
-        # Словарь активных стратегий: {telegram_id: BaseStrategy}
-        self.active_strategies: Dict[int, BaseStrategy] = {}
+        # Словарь активных стратегий: {telegram_id: MACDStrategy}
+        self.active_strategies: Dict[int, MACDStrategy] = {}
 
-        # Доступные стратегии
-        self.available_strategies = {
-            'macd_full': MACDFullStrategy,
-            'macd_long': None,  # TODO: Реализовать позже
-            'macd_short': None  # TODO: Реализовать позже
-        }
-
-    async def start_strategy(self, telegram_id: int, strategy_name: str) -> Dict[str, Any]:
+    async def start_strategy(self, telegram_id: int) -> Dict[str, Any]:
         """
-        Запуск стратегии для пользователя
+        Запуск MACD стратегии для пользователя
 
         Args:
             telegram_id: ID пользователя Telegram
-            strategy_name: Название стратегии (macd_full, macd_long, macd_short)
 
         Returns:
             Результат запуска стратегии
         """
         try:
-            # Проверяем что стратегия существует
-            if strategy_name not in self.available_strategies:
-                return {
-                    'success': False,
-                    'error': f'Стратегия {strategy_name} не найдена'
-                }
-
-            strategy_class = self.available_strategies[strategy_name]
-            if strategy_class is None:
-                return {
-                    'success': False,
-                    'error': f'Стратегия {strategy_name} еще не реализована'
-                }
-
             # Проверяем что у пользователя нет активной стратегии
             if telegram_id in self.active_strategies:
                 current_strategy = self.active_strategies[telegram_id]
@@ -54,18 +30,10 @@ class StrategyManager:
                     'error': f'У вас уже запущена стратегия {current_strategy.strategy_name}. Остановите ее перед запуском новой.'
                 }
 
-            # Проверяем активную стратегию в БД
-            active_strategy_db = db.get_active_strategy(telegram_id)
-            if active_strategy_db:
-                return {
-                    'success': False,
-                    'error': 'У вас есть активная стратегия в базе данных. Перезапустите бота.'
-                }
-
-            logger.info(f"Запуск стратегии {strategy_name} для пользователя {telegram_id}")
+            logger.info(f"Запуск MACD стратегии для пользователя {telegram_id}")
 
             # Создаем экземпляр стратегии
-            strategy = strategy_class(telegram_id)
+            strategy = MACDStrategy(telegram_id)
 
             # Запускаем стратегию
             start_success = await strategy.start()
@@ -74,21 +42,21 @@ class StrategyManager:
                 # Сохраняем в активные стратегии
                 self.active_strategies[telegram_id] = strategy
 
-                logger.info(f"✅ Стратегия {strategy_name} успешно запущена для {telegram_id}")
+                logger.info(f"✅ MACD стратегия успешно запущена для {telegram_id}")
 
                 # Добавляем сводку настроек в ответ
                 settings_summary = strategy.get_settings_summary()
 
                 return {
                     'success': True,
-                    'strategy_name': strategy_name,
+                    'strategy_name': strategy.strategy_name,
                     'strategy_id': strategy.strategy_id,
-                    'message': f'Стратегия {strategy_name} успешно запущена!',
+                    'message': f'Стратегия {strategy.strategy_name} успешно запущена!',
                     'settings': settings_summary
                 }
             else:
                 error_msg = strategy.error_message or 'Неизвестная ошибка при запуске'
-                logger.error(f"❌ Не удалось запустить стратегию {strategy_name}: {error_msg}")
+                logger.error(f"❌ Не удалось запустить MACD стратегию: {error_msg}")
 
                 return {
                     'success': False,
@@ -96,7 +64,7 @@ class StrategyManager:
                 }
 
         except Exception as e:
-            logger.error(f"❌ Исключение при запуске стратегии {strategy_name}: {e}")
+            logger.error(f"❌ Исключение при запуске MACD стратегии: {e}")
             return {
                 'success': False,
                 'error': f'Критическая ошибка: {str(e)}'
@@ -165,7 +133,7 @@ class StrategyManager:
                 'error': f'Ошибка остановки: {str(e)}'
             }
 
-    def get_active_strategy(self, telegram_id: int) -> Optional[BaseStrategy]:
+    def get_active_strategy(self, telegram_id: int) -> Optional[MACDStrategy]:
         """Получение активной стратегии пользователя"""
         return self.active_strategies.get(telegram_id)
 
@@ -185,16 +153,11 @@ class StrategyManager:
         strategy = self.active_strategies[telegram_id]
         status_info = strategy.get_status_info()
 
-        # Добавляем информацию о позиции для MACD Full
-        if hasattr(strategy, 'get_position_info'):
-            position_info = strategy.get_position_info()
-            status_info.update(position_info)
-
         # Добавляем сводку настроек
         settings_summary = strategy.get_settings_summary()
         status_info['settings'] = settings_summary
-
         status_info['is_active'] = True
+
         return status_info
 
     def get_active_strategies_count(self) -> int:
@@ -206,12 +169,8 @@ class StrategyManager:
         result = {}
         for telegram_id, strategy in self.active_strategies.items():
             status_info = strategy.get_status_info()
-
-            # Добавляем информацию о позиции если доступна
-            if hasattr(strategy, 'get_position_info'):
-                position_info = strategy.get_position_info()
-                status_info.update(position_info)
-
+            settings_summary = strategy.get_settings_summary()
+            status_info['settings'] = settings_summary
             result[telegram_id] = status_info
 
         return result
@@ -244,13 +203,6 @@ class StrategyManager:
             'stopped_count': stopped_count,
             'error_count': error_count,
             'total_processed': len(telegram_ids)
-        }
-
-    def get_available_strategies(self) -> Dict[str, bool]:
-        """Получение списка доступных стратегий"""
-        return {
-            name: strategy_class is not None
-            for name, strategy_class in self.available_strategies.items()
         }
 
     def cleanup_inactive_strategies(self):
