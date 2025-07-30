@@ -17,21 +17,6 @@ class PositionState(Enum):
 
 
 class MACDStrategy:
-    """
-    MACD Full стратегия с real-time обработкой сигналов БЕЗ TP/SL
-
-    Изменения:
-    - Real-time пересечения MACD на основе минутных данных
-    - Мгновенная реакция на сигналы (не ждем закрытия свечи)
-    - Поддержка множественных сигналов внутри одной свечи целевого таймфрейма
-    - УБРАНА логика TP/SL - выход только по сигналам MACD
-    - ДОБАВЛЕН динамический пересчет размера позиции перед каждой сделкой
-
-    При бычьем пересечении: закрыть шорт → открыть лонг
-    При медвежьем пересечении: закрыть лонг → открыть шорт
-
-    Поддерживаемые таймфреймы: 5m, 45m
-    """
 
     def __init__(self, telegram_id: int):
         self.telegram_id = telegram_id
@@ -109,12 +94,6 @@ class MACDStrategy:
                 leverage_result = await client.leverage.set_leverage(self.symbol, leverage)
                 if not leverage_result['success']:
                     logger.warning(f"Предупреждение при установке плеча: {leverage_result.get('error', 'Unknown')}")
-
-            # УБРАНО: Фиксированный расчет размера позиции при инициализации
-            # self.position_size = await self._calculate_position_size()
-            # if not self.position_size:
-            #     raise Exception("Не удалось рассчитать размер позиции")
-            # logger.info(f"Размер позиции: {self.position_size}")
 
             # Тестируем расчет размера позиции для проверки настроек
             test_position_size = await self._calculate_position_size()
@@ -225,6 +204,7 @@ class MACDStrategy:
             logger.info(f"📊 Начальное состояние позиции: {self.position_state.value}")
             logger.info(f"📈 Используемый таймфрейм: {self.timeframe}")
             logger.info(f"⚡ Режим: Real-time с обновлениями каждую минуту")
+            logger.info(f"🎯 TP/SL: ОТКЛЮЧЕНЫ - выход только по сигналам MACD")
             logger.info(f"💹 Размер позиции: динамический пересчет перед каждой сделкой")
 
             return True
@@ -413,7 +393,7 @@ class MACDStrategy:
     async def _open_long_position(self, signal: Dict[str, Any]) -> bool:
         """Открытие лонг позиции БЕЗ TP/SL с динамическим размером"""
         try:
-            # НОВОЕ: Пересчитываем размер позиции с актуальной ценой
+            # Пересчитываем размер позиции с актуальной ценой
             current_position_size = await self._calculate_position_size()
             if not current_position_size:
                 logger.error("❌ Не удалось рассчитать актуальный размер позиции")
@@ -446,7 +426,7 @@ class MACDStrategy:
     async def _open_short_position(self, signal: Dict[str, Any]) -> bool:
         """Открытие шорт позиции БЕЗ TP/SL с динамическим размером"""
         try:
-            # НОВОЕ: Пересчитываем размер позиции с актуальной ценой
+            # Пересчитываем размер позиции с актуальной ценой
             current_position_size = await self._calculate_position_size()
             if not current_position_size:
                 logger.error("❌ Не удалось рассчитать актуальный размер позиции")
@@ -526,34 +506,16 @@ class MACDStrategy:
             async with self.bybit_client as client:
                 format_result = await client.symbol_info.format_quantity_for_symbol(self.symbol, quantity)
 
-                if format_result['success']:
-                    formatted_qty = format_result['formatted_quantity']
-                    logger.info(f"🎯 Отформатированное количество: {formatted_qty} {base_asset} (цена: {current_price})")
-                    return formatted_qty
-                else:
-                    logger.error(f"❌ Ошибка получения данных символа: {format_result['error']}")
-                    # Fallback к старому методу
-                    formatted_qty = self._format_quantity_for_symbol_fallback(quantity, self.symbol)
-                    logger.warning(f"⚠️ Используем fallback форматирование: {formatted_qty}")
-                    return formatted_qty
+                if not format_result['success']:
+                    raise Exception(f"Ошибка получения данных символа: {format_result['error']}")
+
+                formatted_qty = format_result['formatted_quantity']
+                logger.info(f"🎯 Отформатированное количество: {formatted_qty} {base_asset} (цена: {current_price})")
+                return formatted_qty
 
         except Exception as e:
             logger.error(f"Ошибка расчета размера позиции: {e}")
             return None
-
-    def _format_quantity_for_symbol_fallback(self, quantity: float, symbol: str) -> str:
-        """Fallback форматирование если API недоступен"""
-        base_asset = symbol.replace('USDT', '')
-
-        # Консервативные настройки для популярных символов
-        if base_asset == 'BTC':
-            return f"{round(quantity, 5):.5f}".rstrip('0').rstrip('.')
-        elif base_asset == 'ETH':
-            return f"{round(quantity, 4):.4f}".rstrip('0').rstrip('.')
-        elif base_asset in ['BNB', 'SOL']:
-            return f"{round(quantity, 3):.3f}".rstrip('0').rstrip('.')
-        else:
-            return f"{round(quantity, 2):.2f}".rstrip('0').rstrip('.')
 
     async def _determine_initial_position_state(self):
         """Определение начального состояния позиции"""
