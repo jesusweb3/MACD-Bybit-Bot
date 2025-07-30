@@ -13,6 +13,8 @@ class MACDIndicator:
 
     Поддерживаемые таймфреймы: 5m, 45m
     Обновления: каждую минуту с пересчетом MACD для выбранного таймфрейма
+
+    ИСПРАВЛЕНО: Корректная инициализация текущей свечи с учетом пропущенных минут
     """
 
     def __init__(self, symbol: str, timeframe: str,
@@ -293,17 +295,14 @@ class MACDIndicator:
         return merged
 
     async def load_historical_data(self):
-        """Загрузка исторических данных"""
+        """ИСПРАВЛЕНО: Загрузка исторических данных с корректной инициализацией текущей свечи"""
         logger.info(f"Загружаем историю для {self.symbol} (целевой TF: {self.timeframe})")
 
-        # ПРАВИЛЬНАЯ ЛОГИКА: Загружаем историю напрямую нужным таймфреймом
-        logger.info(f"Загружаем {self.min_history} исторических {self.timeframe} свечей напрямую")
-
-        # Загружаем исторические данные сразу нужным таймфреймом
+        # Загружаем исторические данные
         if self.timeframe == '5m':
             historical_klines = await self.binance_client.get_klines(self.symbol, '5m', self.min_history)
         elif self.timeframe == '45m':
-            # Для 45m используем 15m и строим кастомные (как раньше)
+            # Для 45m используем 15m и строим кастомные
             base_limit = self.min_history * 3 + 50
             logger.info(f"Для 45m загружаем {base_limit} базовых 15m свечей")
             base_klines_15m = await self.binance_client.get_klines(self.symbol, '15m', base_limit)
@@ -322,16 +321,101 @@ class MACDIndicator:
             logger.warning(
                 f"Получено {len(self.target_klines)} {self.timeframe} свечей, меньше требуемых {self.min_history}")
 
-        # Инициализируем текущую формируемую свечу
-        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-        self.current_target_start_time = self._get_target_candle_start_time(now_ms)
-        self.current_target_candle = None
+        # ИСПРАВЛЕНО: Правильная инициализация текущей свечи с учетом пропущенных минут
+        await self._initialize_current_candle_with_missing_minutes()
 
         # Конвертируем в DataFrame и рассчитываем MACD
         self.df = self.klines_to_dataframe(self.target_klines)
         self.df = self.calculate_macd(self.df)
 
-        logger.info(f"✅ История загружена: {len(self.df)} свечей {self.timeframe} (эффективный метод)")
+        logger.info(f"✅ История загружена: {len(self.df)} свечей {self.timeframe} (с корректной инициализацией)")
+
+    async def _initialize_current_candle_with_missing_minutes(self):
+        """НОВАЯ ФУНКЦИЯ: Инициализация текущей свечи с учетом пропущенных минут"""
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        self.current_target_start_time = self._get_target_candle_start_time(now_ms)
+
+        current_time = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
+        candle_start_time = datetime.fromtimestamp(self.current_target_start_time / 1000, tz=timezone.utc)
+
+        logger.info(f"🕐 Текущее время: {current_time.strftime('%H:%M:%S')}")
+        logger.info(f"📊 Начало текущего {self.timeframe} интервала: {candle_start_time.strftime('%H:%M:%S')}")
+
+        # Проверяем, нужно ли собрать пропущенные минуты
+        minutes_elapsed = (current_time - candle_start_time).total_seconds() / 60
+
+        if minutes_elapsed > 0 and minutes_elapsed < self._get_timeframe_minutes():
+            logger.info(f"⚠️ Обнаружено {minutes_elapsed:.0f} пропущенных минут в текущем {self.timeframe} интервале")
+            await self._collect_missing_minutes_for_current_candle(candle_start_time, current_time)
+        else:
+            logger.info("✅ Пропущенных минут нет, можем начинать с real-time потока")
+            self.current_target_candle = None
+
+    async def _collect_missing_minutes_for_current_candle(self, candle_start_time: datetime, current_time: datetime):
+        """НОВАЯ ФУНКЦИЯ: Сбор пропущенных минут для текущей формируемой свечи"""
+        try:
+            logger.info(f"🔄 Собираем пропущенные минуты для текущей {self.timeframe} свечи...")
+
+            # Определяем сколько минут нужно собрать
+            minutes_to_collect = int((current_time - candle_start_time).total_seconds() / 60)
+
+            if minutes_to_collect <= 0:
+                logger.info("⚠️ Нет минут для сбора")
+                self.current_target_candle = None
+                return
+
+            # Для 45m может быть много минут, ограничиваем запрос
+            max_request = min(minutes_to_collect + 10, 60)  # Максимум 60 минут
+
+            logger.info(f"📊 Запрашиваем последние {max_request} минутных свечей (нужно собрать {minutes_to_collect})")
+
+            # Запрашиваем минутные свечи
+            recent_1m_klines = await self.binance_client.get_klines(
+                self.symbol, '1m', max_request
+            )
+
+            if not recent_1m_klines:
+                logger.warning("⚠️ Не удалось получить минутные свечи, начинаем без текущей свечи")
+                self.current_target_candle = None
+                return
+
+            # Фильтруем только те минуты, которые относятся к текущему интервалу
+            current_interval_minutes = []
+
+            for kline_1m in recent_1m_klines:
+                kline_start = self._get_target_candle_start_time(kline_1m['timestamp'])
+                if kline_start == self.current_target_start_time:
+                    current_interval_minutes.append(kline_1m)
+
+            if current_interval_minutes:
+                # Сортируем по времени
+                current_interval_minutes.sort(key=lambda x: x['timestamp'])
+
+                # Строим текущую свечу из этих минут
+                self.current_target_candle = self._merge_1m_candles(current_interval_minutes)
+                # Устанавливаем правильное время начала интервала
+                self.current_target_candle['timestamp'] = self.current_target_start_time
+
+                # Логируем детали
+                first_minute = datetime.fromtimestamp(current_interval_minutes[0]['timestamp'] / 1000, tz=timezone.utc)
+                last_minute = datetime.fromtimestamp(current_interval_minutes[-1]['timestamp'] / 1000, tz=timezone.utc)
+
+                logger.info(f"✅ Собрана текущая {self.timeframe} свеча из {len(current_interval_minutes)} минут")
+                logger.info(f"📊 Период: {first_minute.strftime('%H:%M')} - {last_minute.strftime('%H:%M')}")
+                logger.info(f"💰 Текущая цена: {self.current_target_candle['close']}")
+
+                # Логируем какие именно минуты собрали
+                if self.timeframe == "45m" and len(current_interval_minutes) > 5:
+                    logger.info(f"🔍 Собрано минут для 45m интервала: {len(current_interval_minutes)}/{45}")
+
+            else:
+                logger.warning(f"⚠️ Минуты для текущего {self.timeframe} интервала не найдены в полученных данных")
+                logger.debug(f"🔍 Ожидаемое время начала интервала: {candle_start_time.strftime('%H:%M:%S')}")
+                self.current_target_candle = None
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка сбора пропущенных минут для {self.timeframe}: {e}")
+            self.current_target_candle = None
 
     async def kline_callback(self, kline_1m: Dict[str, Any]):
         """Callback для новых минутных свечей"""
@@ -363,7 +447,7 @@ class MACDIndicator:
             # Обновляем текущую целевую свечу
             self._update_current_target_candle(kline_1m)
 
-            # НОВАЯ ЛОГИКА: Проверяем, является ли эта минута ПОСЛЕДНЕЙ в целевом интервале
+            # Проверяем, является ли эта минута ПОСЛЕДНЕЙ в целевом интервале
             await self._check_if_target_candle_should_close(kline_1m)
 
         # Пересчитываем MACD и проверяем сигналы
@@ -402,7 +486,7 @@ class MACDIndicator:
         logger.debug(f"🆕 Начата новая {self.timeframe} свеча")
 
     def _update_current_target_candle(self, kline_1m: Dict[str, Any]):
-        """Обновление текущей целевой свечи новой минутной свечой"""
+        """Обновление текущей целевой свечи новой минутной свечей"""
         if self.current_target_candle is None:
             return
 
@@ -504,7 +588,7 @@ class MACDIndicator:
         logger.info(f"🚀 Запускаем Real-time MACD для {self.symbol} на {self.timeframe}")
 
         try:
-            # Загружаем историю
+            # Загружаем историю с корректной инициализацией
             await self.load_historical_data()
 
             # Запускаем WebSocket поток для минутных данных
