@@ -49,6 +49,7 @@ class MACDIndicator:
         # Флаги состояния
         self.is_running = False
         self.stream_active = False
+        self._timing_task: Optional[asyncio.Task] = None  # Задача для проверки времени
 
         # Для 45m таймфрейма - состояние построения кастомных свечей
         self.is_custom_timeframe = timeframe == '45m'
@@ -362,6 +363,9 @@ class MACDIndicator:
         kline_time = datetime.fromtimestamp(base_kline_15m['timestamp'] / 1000, tz=timezone.utc)
         logger.debug(f"Получена 15m свеча: {kline_time.strftime('%H:%M:%S')} UTC")
 
+        # ПРОАКТИВНАЯ ПРОВЕРКА: Проверяем не пора ли начать новый 45m интервал
+        await self._check_and_start_new_45m_interval()
+
         # Определяем к какому 45m интервалу относится эта 15m свеча
         kline_45m_start = self._get_45m_grid_start_time(base_kline_15m['timestamp'])
 
@@ -372,12 +376,7 @@ class MACDIndicator:
                 await self._complete_45m_kline()
 
             # Начинаем новый 45m интервал
-            self.current_45m_start_time = kline_45m_start
-            self.next_45m_end_time = self._get_next_45m_end_time(kline_45m_start)
-            self.accumulated_15m_klines = []
-
-            logger.info(f"🆕 Начат новый 45m интервал")
-            self._log_45m_timing_info()
+            await self._start_new_45m_interval(kline_45m_start)
 
         # Добавляем 15m свечу к текущему 45m интервалу
         self.accumulated_15m_klines.append(base_kline_15m)
@@ -386,6 +385,31 @@ class MACDIndicator:
         # Если накопили 3 свечи - завершаем 45m свечу
         if len(self.accumulated_15m_klines) == 3:
             await self._complete_45m_kline()
+
+    async def _check_and_start_new_45m_interval(self):
+        """Проактивная проверка не пора ли начать новый 45m интервал"""
+        if not self.is_custom_timeframe or not self.next_45m_end_time:
+            return
+
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+        # Если текущее время больше времени окончания свечи - нужен новый интервал
+        if now_ms >= self.next_45m_end_time:
+            new_start_time = self._get_45m_grid_start_time(now_ms)
+
+            # Проверяем что это действительно новый интервал
+            if new_start_time != self.current_45m_start_time:
+                logger.info("🕐 Время нового 45m интервала наступило")
+                await self._start_new_45m_interval(new_start_time)
+
+    async def _start_new_45m_interval(self, kline_45m_start: int):
+        """Начало нового 45m интервала"""
+        self.current_45m_start_time = kline_45m_start
+        self.next_45m_end_time = self._get_next_45m_end_time(kline_45m_start)
+        self.accumulated_15m_klines = []
+
+        logger.info(f"🆕 Начат новый 45m интервал")
+        self._log_45m_timing_info()
 
     async def _complete_45m_kline(self):
         """Завершение и обработка 45m свечи"""
@@ -434,6 +458,19 @@ class MACDIndicator:
         # Очищаем накопленные свечи
         self.accumulated_15m_klines = []
 
+    async def _timing_monitor(self):
+        """Мониторинг времени для 45m интервалов"""
+        while self.is_running:
+            try:
+                await asyncio.sleep(30)  # Проверяем каждые 30 секунд
+                if self.is_running and self.is_custom_timeframe:
+                    await self._check_and_start_new_45m_interval()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Ошибка в timing monitor: {e}")
+                await asyncio.sleep(60)  # При ошибке ждем дольше
+
     async def start(self):
         """Запуск индикатора"""
         if self.is_running:
@@ -459,6 +496,11 @@ class MACDIndicator:
             # Запускаем поток
             await self.binance_client.start_kline_stream(self.symbol, base_timeframe, callback_wrapper)
             self.stream_active = True
+
+            # Запускаем таймер для 45m (проверка каждые 30 секунд)
+            if self.is_custom_timeframe:
+                self._timing_task = asyncio.create_task(self._timing_monitor())
+
             self.is_running = True
 
             logger.info("✅ MACD индикатор запущен и готов к работе")
@@ -487,6 +529,14 @@ class MACDIndicator:
             if self.stream_active:
                 await self.binance_client.stop_kline_stream(self.symbol, base_timeframe)
                 self.stream_active = False
+
+            # Останавливаем таймер
+            if self._timing_task and not self._timing_task.done():
+                self._timing_task.cancel()
+                try:
+                    await self._timing_task
+                except asyncio.CancelledError:
+                    pass
 
             # Очищаем состояние 45m
             if self.is_custom_timeframe:
