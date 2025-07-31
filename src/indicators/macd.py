@@ -18,7 +18,7 @@ class MACDIndicator:
     """
 
     def __init__(self, symbol: str, timeframe: str,
-                 fast_period: int = 12, slow_period: int = 26, signal_period: int = 9,
+                 fast_period: int = 12, slow_period: int = 26, signal_period: int = 7,
                  min_history: int = 100):
         """
         Args:
