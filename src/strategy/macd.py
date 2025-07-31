@@ -2,11 +2,12 @@
 import asyncio
 from typing import Dict, Any, Optional
 from enum import Enum
-from datetime import datetime, UTC
+from datetime import datetime
 from ..indicators.macd import MACDIndicator
 from ..exchange.bybit import BybitClient
 from ..database.database import db
 from ..utils.logger import logger
+from ..utils.helpers import get_msk_time, format_msk_time
 
 
 class PositionState(Enum):
@@ -34,7 +35,6 @@ class MACDStrategy:
         self.strategy_id: Optional[int] = None
         self.symbol: Optional[str] = None
         self.timeframe: Optional[str] = None
-        # УБРАНО: self.position_size - теперь рассчитывается динамически
 
         # Параметры повторных попыток
         self.retry_attempts = 3
@@ -56,7 +56,7 @@ class MACDStrategy:
     async def initialize(self) -> bool:
         """Инициализация стратегии"""
         try:
-            logger.info(f"Инициализация Real-time MACD стратегии для пользователя {self.telegram_id}")
+            logger.info(f"🔧 Инициализация MACD стратегии для пользователя {self.telegram_id}")
 
             # Получаем пользователя и настройки
             user = db.get_or_create_user(self.telegram_id)
@@ -88,41 +88,38 @@ class MACDStrategy:
 
             # Устанавливаем плечо
             leverage = self.user_settings.get('leverage')
-            logger.info(f"Устанавливаем плечо {leverage}x для {self.symbol}")
-
             async with self.bybit_client as client:
                 leverage_result = await client.leverage.set_leverage(self.symbol, leverage)
-                if not leverage_result['success']:
-                    logger.warning(f"Предупреждение при установке плеча: {leverage_result.get('error', 'Unknown')}")
+                if leverage_result['success']:
+                    logger.info(f"⚡ Плечо {leverage}x установлено для {self.symbol}")
+                else:
+                    logger.info(f"⚡ Плечо {leverage}x уже было установлено для {self.symbol}")
 
-            # Тестируем расчет размера позиции для проверки настроек
+            # Тестируем расчет размера позиции
             test_position_size = await self._calculate_position_size()
             if not test_position_size:
-                raise Exception("Не удалось рассчитать размер позиции - проверьте настройки")
+                raise Exception("Не удалось рассчитать размер позиции")
 
-            logger.info(f"✅ Тестовый расчет размера позиции успешен: {test_position_size}")
-            logger.info(f"💡 Размер будет пересчитываться динамически перед каждой сделкой")
+            logger.info(f"✅ Тестовый размер позиции: {test_position_size}")
 
-            # Инициализируем Real-time MACD индикатор
-            logger.info(f"Инициализация Real-time MACD для {self.symbol} на {self.timeframe}")
-
+            # Инициализируем MACD индикатор
             self.macd_indicator = MACDIndicator(
                 symbol=self.symbol,
                 timeframe=self.timeframe
             )
 
-            logger.info(f"✅ Real-time MACD стратегия успешно инициализирована")
+            logger.info(f"✅ MACD стратегия инициализирована: {self.symbol} {self.timeframe}")
             return True
 
         except Exception as e:
-            logger.error(f"❌ Ошибка инициализации Real-time MACD стратегии: {e}")
+            logger.error(f"❌ Ошибка инициализации MACD стратегии: {e}")
             self.error_message = str(e)
             return False
 
     def _validate_settings(self) -> bool:
         """Проверка настроек пользователя"""
         if not self.user_settings:
-            logger.error("Настройки пользователя отсутствуют")
+            logger.error("❌ Настройки пользователя отсутствуют")
             self.error_message = "Настройки пользователя не найдены"
             return False
 
@@ -138,41 +135,31 @@ class MACDStrategy:
                 missing_fields.append(field)
 
         if missing_fields:
-            logger.error(f"Отсутствуют обязательные настройки: {', '.join(missing_fields)}")
+            logger.error(f"❌ Отсутствуют настройки: {', '.join(missing_fields)}")
             self.error_message = f"Не настроено: {', '.join(missing_fields)}"
             return False
 
         # Проверяем размер позиции
         position_size_info = db.get_position_size_info(self.telegram_id)
         if not position_size_info.get('value') or position_size_info.get('value') <= 0:
-            logger.error("Размер позиции не настроен или равен нулю")
+            logger.error("❌ Размер позиции не настроен")
             self.error_message = "Размер позиции не настроен"
-            return False
-
-        # Проверяем корректность leverage
-        leverage = self.user_settings.get('leverage')
-        if not isinstance(leverage, int) or leverage < 1 or leverage > 100:
-            logger.error(f"Некорректное плечо: {leverage}")
-            self.error_message = "Некорректное значение плеча"
             return False
 
         # Проверяем таймфрейм
         timeframe = self.user_settings.get('timeframe')
-        valid_timeframes = ['5m', '45m']
-
-        if timeframe not in valid_timeframes:
-            logger.error(f"Некорректный таймфрейм: {timeframe}")
-            self.error_message = f"Неподдерживаемый таймфрейм: {timeframe}. Поддерживаются: 5m, 45m"
+        if timeframe not in ['5m', '45m']:
+            logger.error(f"❌ Неподдерживаемый таймфрейм: {timeframe}")
+            self.error_message = f"Неподдерживаемый таймфрейм: {timeframe}"
             return False
 
-        logger.debug("✅ Все настройки пользователя валидны")
         return True
 
     async def start(self) -> bool:
         """Запуск стратегии"""
         try:
             if self.is_active:
-                logger.warning("Стратегия уже запущена")
+                logger.warning("⚠️ Стратегия уже запущена")
                 return False
 
             # Инициализируем если еще не инициализирована
@@ -185,32 +172,28 @@ class MACDStrategy:
                 strategy_name=self.strategy_name
             )
 
-            self.start_time = datetime.now(UTC)
+            self.start_time = get_msk_time()
             self.is_active = True
 
-            logger.info(f"🚀 Запуск Real-time MACD стратегии (ID: {self.strategy_id})")
+            logger.info(f"🚀 Запуск MACD стратегии (ID: {self.strategy_id})")
 
             # Добавляем callback для MACD сигналов
             self.macd_indicator.add_callback(self._handle_macd_signal)
 
-            # Запускаем Real-time MACD индикатор
-            logger.info("🚀 Запускаем Real-time MACD индикатор...")
+            # Запускаем MACD индикатор
             await self.macd_indicator.start()
 
             # Определяем начальное состояние позиции
             await self._determine_initial_position_state()
 
-            logger.info(f"🎯 Real-time MACD стратегия запущена для {self.symbol}")
-            logger.info(f"📊 Начальное состояние позиции: {self.position_state.value}")
-            logger.info(f"📈 Используемый таймфрейм: {self.timeframe}")
-            logger.info(f"⚡ Режим: Real-time с обновлениями каждую минуту")
-            logger.info(f"🎯 TP/SL: ОТКЛЮЧЕНЫ - выход только по сигналам MACD")
-            logger.info(f"💹 Размер позиции: динамический пересчет перед каждой сделкой")
+            logger.info(f"✅ MACD стратегия запущена: {self.symbol} {self.timeframe}")
+            logger.info(f"📊 Состояние позиции: {self.position_state.value}")
+            logger.info(f"💹 Размер позиции: динамический расчет перед каждой сделкой")
 
             return True
 
         except Exception as e:
-            logger.error(f"❌ Ошибка запуска Real-time MACD стратегии: {e}")
+            logger.error(f"❌ Ошибка запуска MACD стратегии: {e}")
             self.error_message = str(e)
             self.is_active = False
             return False
@@ -219,14 +202,12 @@ class MACDStrategy:
         """Остановка стратегии"""
         try:
             if not self.is_active:
-                logger.warning("Стратегия уже остановлена")
                 return True
 
-            logger.info(f"⏹️ Остановка Real-time MACD стратегии: {reason}")
+            logger.info(f"⏹️ Остановка MACD стратегии: {reason}")
 
-            # Останавливаем Real-time MACD индикатор
+            # Останавливаем MACD индикатор
             if self.macd_indicator:
-                logger.info("⏹️ Останавливаем Real-time MACD индикатор...")
                 await self.macd_indicator.stop()
 
             self.is_active = False
@@ -239,34 +220,28 @@ class MACDStrategy:
             await self._cleanup()
 
             # Логируем статистику
-            logger.info(f"📊 Статистика Real-time режима:")
-            logger.info(f"   Всего сигналов получено: {self.total_signals_received}")
-            logger.info(f"   Сигналов обработано: {self.signals_processed}")
+            logger.info(
+                f"📊 Статистика: получено {self.total_signals_received} сигналов, обработано {self.signals_processed}")
+            logger.info(f"✅ MACD стратегия остановлена")
 
-            logger.info(f"✅ Real-time MACD стратегия остановлена")
             return True
 
         except Exception as e:
-            logger.error(f"❌ Ошибка остановки Real-time MACD стратегии: {e}")
+            logger.error(f"❌ Ошибка остановки MACD стратегии: {e}")
             return False
 
     async def _cleanup(self):
         """Очистка ресурсов"""
         try:
             if self.macd_indicator:
-                logger.debug("Закрываем Real-time MACD индикатор...")
                 await self.macd_indicator.close()
                 self.macd_indicator = None
 
-            # Bybit клиент закрывается автоматически через context manager
-
-            logger.debug("Ресурсы Real-time стратегии очищены")
-
         except Exception as e:
-            logger.error(f"Ошибка очистки ресурсов: {e}")
+            logger.error(f"❌ Ошибка очистки ресурсов: {e}")
 
     async def _handle_macd_signal(self, signal: Dict[str, Any]):
-        """Обработка Real-time сигналов MACD с защитой от частых срабатываний"""
+        """Обработка сигналов MACD с защитой от частых срабатываний"""
         try:
             if not self.is_active:
                 logger.warning("⚠️ Получен сигнал, но стратегия неактивна")
@@ -274,20 +249,21 @@ class MACDStrategy:
 
             # Увеличиваем счетчик полученных сигналов
             self.total_signals_received += 1
-            self.last_signal_time = datetime.now(UTC)
+            self.last_signal_time = get_msk_time()
 
             signal_type = signal.get('type')
             price = signal.get('price')
             crossover_type = signal.get('crossover_type')
             timeframe = signal.get('timeframe')
 
+            current_time_msk = format_msk_time()
             logger.info(
-                f"📊 Real-time MACD сигнал #{self.total_signals_received} на {timeframe}: {signal_type} ({crossover_type}) при цене {price}")
-            logger.info(f"🔄 Текущее состояние: {self.position_state.value}")
+                f"🎯 MACD сигнал #{self.total_signals_received}: {signal_type.upper()} ({crossover_type}) при цене {price}")
+            logger.info(f"📊 Текущее состояние: {self.position_state.value} | Время: {current_time_msk} МСК")
 
             # Проверяем debounce (защита от слишком частых сигналов)
             if self.last_processed_signal_time:
-                time_since_last = (datetime.now(UTC) - self.last_processed_signal_time).total_seconds()
+                time_since_last = (get_msk_time() - self.last_processed_signal_time).total_seconds()
                 if time_since_last < self.min_signal_interval_seconds:
                     logger.warning(
                         f"⚠️ Сигнал проигнорирован (debounce): {time_since_last:.1f}с < {self.min_signal_interval_seconds}с")
@@ -303,18 +279,17 @@ class MACDStrategy:
                 return
 
             # Обновляем время последней обработки
-            self.last_processed_signal_time = datetime.now(UTC)
+            self.last_processed_signal_time = get_msk_time()
             self.signals_processed += 1
 
-            logger.info(f"✅ Real-time сигнал #{self.signals_processed} обработан успешно")
+            logger.info(f"✅ Сигнал #{self.signals_processed} обработан успешно")
 
         except Exception as e:
-            logger.error(f"Ошибка обработки Real-time MACD сигнала: {e}")
-            logger.warning("⚠️ Стратегия продолжает работу, ожидаем следующий сигнал")
+            logger.error(f"❌ Ошибка обработки MACD сигнала: {e}")
 
     async def _handle_bullish_signal(self, signal: Dict[str, Any]):
         """Обработка бычьего сигнала - переход в лонг"""
-        logger.info("🟢 Real-time бычий сигнал: переход в LONG позицию")
+        logger.info("🟢 Бычий сигнал: переход в LONG позицию")
 
         # Закрываем шорт если есть
         if self.position_state == PositionState.SHORT_POSITION:
@@ -330,14 +305,14 @@ class MACDStrategy:
 
         if open_success:
             self.position_state = PositionState.LONG_POSITION
-            logger.info("✅ Успешно перешли в LONG позицию (Real-time)")
+            logger.info("✅ Успешно перешли в LONG позицию")
         else:
-            logger.warning("⚠️ Не удалось открыть LONG позицию, остаемся без позиции")
+            logger.warning("⚠️ Не удалось открыть LONG позицию")
             self.position_state = PositionState.NO_POSITION
 
     async def _handle_bearish_signal(self, signal: Dict[str, Any]):
         """Обработка медвежьего сигнала - переход в шорт"""
-        logger.info("🔴 Real-time медвежий сигнал: переход в SHORT позицию")
+        logger.info("🔴 Медвежий сигнал: переход в SHORT позицию")
 
         # Закрываем лонг если есть
         if self.position_state == PositionState.LONG_POSITION:
@@ -353,65 +328,60 @@ class MACDStrategy:
 
         if open_success:
             self.position_state = PositionState.SHORT_POSITION
-            logger.info("✅ Успешно перешли в SHORT позицию (Real-time)")
+            logger.info("✅ Успешно перешли в SHORT позицию")
         else:
-            logger.warning("⚠️ Не удалось открыть SHORT позицию, остаемся без позиции")
+            logger.warning("⚠️ Не удалось открыть SHORT позицию")
             self.position_state = PositionState.NO_POSITION
 
     async def _close_position_with_retry(self, position_type: str) -> bool:
         """Закрытие позиции с повторными попытками"""
         for attempt in range(1, self.retry_attempts + 1):
             try:
-                logger.info(f"🔄 Попытка {attempt}/{self.retry_attempts} закрытия {position_type} позиции")
-
                 async with self.bybit_client as client:
                     result = await client.positions.close_position(self.symbol)
 
                 if result['success']:
-                    logger.info(f"✅ {position_type} позиция успешно закрыта")
+                    logger.info(f"✅ {position_type} позиция закрыта")
                     await self._record_trade_close(position_type, result)
                     return True
                 else:
                     error_msg = result.get('error', 'Unknown error')
-                    logger.warning(f"⚠️ Не удалось закрыть позицию: {error_msg}")
 
                     # Проверяем специальные случаи
                     if "position" in error_msg.lower() and "not found" in error_msg.lower():
-                        logger.warning(f"📊 Позиция уже закрыта или не найдена: {error_msg}")
+                        logger.info(f"📊 Позиция уже закрыта: {error_msg}")
                         return True
+
+                    logger.warning(f"⚠️ Попытка {attempt}: {error_msg}")
 
             except Exception as e:
                 logger.error(f"❌ Исключение при закрытии позиции (попытка {attempt}): {e}")
 
             if attempt < self.retry_attempts:
-                logger.info(f"⏳ Ожидание {self.retry_delay}с перед следующей попыткой")
                 await asyncio.sleep(self.retry_delay)
 
         logger.error(f"❌ Не удалось закрыть {position_type} позицию за {self.retry_attempts} попыток")
         return False
 
     async def _open_long_position(self, signal: Dict[str, Any]) -> bool:
-        """Открытие лонг позиции БЕЗ TP/SL с динамическим размером"""
+        """Открытие лонг позиции с динамическим размером"""
         try:
             # Пересчитываем размер позиции с актуальной ценой
             current_position_size = await self._calculate_position_size()
             if not current_position_size:
-                logger.error("❌ Не удалось рассчитать актуальный размер позиции")
+                logger.error("❌ Не удалось рассчитать размер позиции")
                 return False
 
-            logger.info(f"💹 Актуальный размер позиции: {current_position_size} (цена сигнала: {signal['price']})")
+            logger.info(f"💹 Размер позиции: {current_position_size} (цена: {signal['price']})")
 
             async with self.bybit_client as client:
                 result = await client.orders.buy_market(
                     symbol=self.symbol,
-                    qty=current_position_size  # Используем свежий расчет
+                    qty=current_position_size
                 )
 
             if result['success']:
                 logger.info(f"✅ LONG позиция открыта: {result['order_id']}")
-                logger.info(f"📊 Размер: {current_position_size}")
-                logger.info(f"🎯 Выход: только по сигналам MACD")
-
                 await self._record_trade_open('LONG', signal, result)
                 return True
             else:
@@ -424,27 +394,24 @@ class MACDStrategy:
             return False
 
     async def _open_short_position(self, signal: Dict[str, Any]) -> bool:
-        """Открытие шорт позиции БЕЗ TP/SL с динамическим размером"""
+        """Открытие шорт позиции с динамическим размером"""
         try:
             # Пересчитываем размер позиции с актуальной ценой
             current_position_size = await self._calculate_position_size()
             if not current_position_size:
-                logger.error("❌ Не удалось рассчитать актуальный размер позиции")
+                logger.error("❌ Не удалось рассчитать размер позиции")
                 return False
 
-            logger.info(f"💹 Актуальный размер позиции: {current_position_size} (цена сигнала: {signal['price']})")
+            logger.info(f"💹 Размер позиции: {current_position_size} (цена: {signal['price']})")
 
             async with self.bybit_client as client:
                 result = await client.orders.sell_market(
                     symbol=self.symbol,
-                    qty=current_position_size  # Используем свежий расчет
+                    qty=current_position_size
                 )
 
             if result['success']:
                 logger.info(f"✅ SHORT позиция открыта: {result['order_id']}")
-                logger.info(f"📊 Размер: {current_position_size}")
-                logger.info(f"🎯 Выход: только по сигналам MACD")
-
                 await self._record_trade_open('SHORT', signal, result)
                 return True
             else:
@@ -461,67 +428,53 @@ class MACDStrategy:
         try:
             position_info = db.get_position_size_info(self.telegram_id)
 
-            # Получаем актуальную цену для точного расчета
+            # Получаем актуальную цену
             async with self.bybit_client as client:
                 price_result = await client.price.get_price(self.symbol)
                 if not price_result['success']:
-                    raise Exception(f"Не удалось получить цену {self.symbol}: {price_result.get('error')}")
+                    raise Exception(f"Не удалось получить цену {self.symbol}")
 
                 current_price = price_result['price']
-                logger.info(f"💲 Актуальная цена {self.symbol}: {current_price}")
 
             if position_info['type'] == 'fixed_usdt':
                 # Фиксированная сумма в USDT
                 usdt_amount = position_info['value']
-                logger.info(f"💰 Фиксированная сумма: {usdt_amount} USDT")
-
             elif position_info['type'] == 'percentage':
-                # Процент от баланса - получаем актуальный баланс
+                # Процент от баланса
                 async with self.bybit_client as client:
                     balance_result = await client.balance.get_balance()
 
                 balance = balance_result.get('free_usdt', 0)
-
                 if balance <= 0:
                     raise Exception("Недостаточно средств на балансе")
 
                 usdt_amount = balance * (position_info['value'] / 100)
-                logger.info(
-                    f"💰 {position_info['value']}% от актуального баланса {balance:.2f} = {usdt_amount:.2f} USDT")
-
             else:
                 raise Exception("Неизвестный тип размера позиции")
 
             # Применяем плечо
             leverage = self.user_settings.get('leverage', 1)
             total_volume_usdt = usdt_amount * leverage
-            logger.info(f"📊 Объем с плечом {leverage}x: {total_volume_usdt} USDT")
 
             # Рассчитываем количество
-            base_asset = self.symbol.replace('USDT', '')
             quantity = total_volume_usdt / current_price
-            logger.info(f"⚖️ Количество {base_asset} (точное): {quantity:.8f}")
 
             # Форматируем с актуальными данными от биржи
             async with self.bybit_client as client:
                 format_result = await client.symbol_info.format_quantity_for_symbol(self.symbol, quantity)
 
                 if not format_result['success']:
-                    raise Exception(f"Ошибка получения данных символа: {format_result['error']}")
+                    raise Exception(f"Ошибка форматирования количества: {format_result['error']}")
 
-                formatted_qty = format_result['formatted_quantity']
-                logger.info(f"🎯 Отформатированное количество: {formatted_qty} {base_asset} (цена: {current_price})")
-                return formatted_qty
+                return format_result['formatted_quantity']
 
         except Exception as e:
-            logger.error(f"Ошибка расчета размера позиции: {e}")
+            logger.error(f"❌ Ошибка расчета размера позиции: {e}")
             return None
 
     async def _determine_initial_position_state(self):
         """Определение начального состояния позиции"""
         try:
-            logger.info("🔍 Проверяем начальное состояние позиции...")
-
             async with self.bybit_client as client:
                 positions_result = await client.positions.get_positions(self.symbol)
 
@@ -532,27 +485,24 @@ class MACDStrategy:
 
                 if side == 'Buy':
                     self.position_state = PositionState.LONG_POSITION
-                    logger.info(f"📈 Обнаружена существующая LONG позиция: {size}")
+                    logger.info(f"📈 Обнаружена LONG позиция: {size}")
                 elif side == 'Sell':
                     self.position_state = PositionState.SHORT_POSITION
-                    logger.info(f"📉 Обнаружена существующая SHORT позиция: {size}")
+                    logger.info(f"📉 Обнаружена SHORT позиция: {size}")
             else:
                 self.position_state = PositionState.NO_POSITION
-                logger.info("📊 Открытых позиций не обнаружено")
+                logger.info("📊 Открытых позиций нет")
 
         except Exception as e:
-            logger.error(f"Ошибка определения состояния позиции: {e}")
+            logger.error(f"❌ Ошибка определения состояния позиции: {e}")
             self.position_state = PositionState.NO_POSITION
-            logger.warning("⚠️ Устанавливаем состояние 'нет позиции' по умолчанию")
 
     async def _record_trade_open(self, side: str, signal: Dict[str, Any], order_result: Dict[str, Any]):
         """Запись открытия сделки в историю"""
         try:
             if self.strategy_id and self.user_id:
-                # Получаем количество из результата ордера или рассчитываем актуальное
                 quantity = order_result.get('qty', 'unknown')
                 if quantity == 'unknown':
-                    # Если количество не передано, получаем текущий размер позиции
                     current_size = await self._calculate_position_size()
                     quantity = current_size if current_size else 'unknown'
 
@@ -564,17 +514,16 @@ class MACDStrategy:
                     quantity=str(quantity),
                     order_id=order_result.get('order_id')
                 )
-                logger.info(
-                    f"📝 Записана Real-time сделка открытия: ID={trade_id}, сигнал: {signal['type']}, размер: {quantity}")
+                logger.info(f"📝 Записана сделка: ID={trade_id}, {side}, размер: {quantity}")
         except Exception as e:
-            logger.error(f"Ошибка записи сделки открытия: {e}")
+            logger.error(f"❌ Ошибка записи сделки: {e}")
 
     async def _record_trade_close(self, side: str, close_result: Dict[str, Any]):
         """Запись закрытия сделки в историю"""
         try:
-            logger.info(f"📝 Real-time сделка {side} закрыта: {close_result.get('order_id')}")
+            logger.info(f"📝 Сделка {side} закрыта: {close_result.get('order_id')}")
         except Exception as e:
-            logger.error(f"Ошибка записи закрытия сделки: {e}")
+            logger.error(f"❌ Ошибка записи закрытия сделки: {e}")
 
     # Методы для получения информации о стратегии
     def get_status_info(self) -> Dict[str, Any]:
@@ -585,13 +534,12 @@ class MACDStrategy:
             'position_state': self.position_state.value,
             'symbol': self.symbol,
             'timeframe': self.timeframe,
-            'position_size': 'dynamic',  # Теперь всегда динамический
+            'position_size': 'dynamic',
             'start_time': self.start_time.isoformat() if self.start_time else None,
             'error_message': self.error_message,
             'strategy_id': self.strategy_id,
             'telegram_id': self.telegram_id,
             'user_id': self.user_id,
-            # Real-time статистика
             'total_signals_received': self.total_signals_received,
             'signals_processed': self.signals_processed,
             'last_signal_time': self.last_signal_time.isoformat() if self.last_signal_time else None,

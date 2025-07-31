@@ -13,10 +13,10 @@ from src.bot.keyboards.trade_menu import (
 from ...utils.trade_utils import TradeBotUtils
 from src.utils.logger import logger
 from src.utils.config import config
+from src.utils.helpers import format_msk_time
 from src.database.database import db
 from src.strategy import strategy_manager
 import asyncio
-from datetime import datetime
 
 router = Router()
 
@@ -25,7 +25,6 @@ router = Router()
 async def trade_menu(callback: CallbackQuery):
     """Главное торговое меню"""
     if not config.is_user_allowed(callback.from_user.id):
-        logger.warning(f"Unauthorized callback from user {callback.from_user.id} - ignored silently")
         return
 
     try:
@@ -52,17 +51,16 @@ async def trade_menu(callback: CallbackQuery):
         await callback.answer()
 
     except Exception as e:
-        logger.error(f"Ошибка в trade_menu: {e}")
+        logger.error(f"❌ Ошибка в trade_menu: {e}")
         await callback.answer("❌ Ошибка загрузки торгового меню", show_alert=True)
 
 
 @router.callback_query(F.data == "trade_strategy_blocked")
 async def strategy_blocked(callback: CallbackQuery):
-    """Обработка заблокированной кнопки стратегии - только уведомление"""
+    """Обработка заблокированной кнопки стратегии"""
     if not config.is_user_allowed(callback.from_user.id):
         return
 
-    # Просто показываем уведомление и НЕ меняем интерфейс
     await callback.answer("🔒 Завершите настройки для доступа к стратегии", show_alert=True)
 
 
@@ -72,26 +70,16 @@ async def strategy_menu(callback: CallbackQuery):
     if not config.is_user_allowed(callback.from_user.id):
         return
 
-    # Дополнительная проверка настроек
+    # Проверка настроек
     settings_info = TradeBotUtils.check_settings_completeness(callback.from_user.id)
 
     if not settings_info['complete']:
-        # Если настройки не завершены - показываем уведомление и остаемся в меню
         await callback.answer("🔒 Завершите настройки для доступа к стратегии", show_alert=True)
         return
 
     # Проверяем есть ли уже активная стратегия
     if strategy_manager.is_strategy_active(callback.from_user.id):
-        await callback.answer("⚠️ У вас уже запущена стратегия. Остановите ее в разделе торговли.", show_alert=True)
-        return
-
-    # Специальная проверка для MACD Full - нужны одинаковые таймфреймы
-    user_settings = db.get_user_settings(callback.from_user.id)
-    entry_tf = user_settings.get('entry_timeframe') if user_settings else None
-    exit_tf = user_settings.get('exit_timeframe') if user_settings else None
-
-    if entry_tf != exit_tf:
-        await callback.answer("⚠️ Для MACD стратегии настройте одинаковые ТФ для входа и выхода", show_alert=True)
+        await callback.answer("⚠️ У вас уже запущена стратегия", show_alert=True)
         return
 
     # Генерируем текст подтверждения для MACD стратегии
@@ -107,14 +95,16 @@ async def strategy_menu(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("start_trading_"))
 async def start_trading(callback: CallbackQuery):
-    """Запуск торговли - РЕАЛЬНАЯ РЕАЛИЗАЦИЯ"""
+    """Запуск торговли"""
     if not config.is_user_allowed(callback.from_user.id):
         return
 
-    # Убираем strategy_name из callback_data, так как теперь всегда MACD
     strategy_name = "MACD Full"
+    current_time_msk = format_msk_time()
 
     try:
+        logger.info(f"🚀 Пользователь {callback.from_user.id} запускает стратегию {strategy_name} в {current_time_msk} МСК")
+
         # Показываем сообщение о запуске
         await callback.message.edit_text(
             f"🔄 <b>Запуск стратегии {strategy_name}...</b>\n\n"
@@ -125,11 +115,11 @@ async def start_trading(callback: CallbackQuery):
         )
         await callback.answer()
 
-        # РЕАЛЬНЫЙ ЗАПУСК СТРАТЕГИИ (без параметра strategy_name)
+        # Запуск стратегии
         result = await strategy_manager.start_strategy(callback.from_user.id)
 
         if result['success']:
-            # Успешный запуск - сразу перекидываем в меню активной торговли
+            # Успешный запуск
             logger.info(f"✅ Пользователь {callback.from_user.id} успешно запустил стратегию {strategy_name}")
             await active_trading_menu(callback)
 
@@ -148,10 +138,9 @@ async def start_trading(callback: CallbackQuery):
                 parse_mode='HTML'
             )
 
-            logger.error(f"❌ Ошибка запуска стратегии {strategy_name} для {callback.from_user.id}: {result['error']}")
+            logger.error(f"❌ Ошибка запуска стратегии для {callback.from_user.id}: {result['error']}")
 
     except Exception as e:
-        # Критическая ошибка
         logger.error(f"❌ Критическая ошибка при запуске стратегии: {e}")
 
         await callback.message.edit_text(
@@ -166,7 +155,7 @@ async def start_trading(callback: CallbackQuery):
 
 @router.callback_query(F.data == "stop_trading")
 async def stop_trading(callback: CallbackQuery):
-    """Остановка торговли - РЕАЛЬНАЯ РЕАЛИЗАЦИЯ"""
+    """Остановка торговли"""
     if not config.is_user_allowed(callback.from_user.id):
         return
 
@@ -179,6 +168,9 @@ async def stop_trading(callback: CallbackQuery):
         # Получаем информацию о текущей стратегии
         strategy_status = strategy_manager.get_strategy_status(callback.from_user.id)
         strategy_name = strategy_status.get('strategy_name', 'MACD Full')
+        current_time_msk = format_msk_time()
+
+        logger.info(f"⏹️ Пользователь {callback.from_user.id} останавливает стратегию {strategy_name} в {current_time_msk} МСК")
 
         # Показываем сообщение об остановке
         await callback.message.edit_text(
@@ -190,7 +182,7 @@ async def stop_trading(callback: CallbackQuery):
         )
         await callback.answer()
 
-        # РЕАЛЬНАЯ ОСТАНОВКА СТРАТЕГИИ
+        # Остановка стратегии
         result = await strategy_manager.stop_strategy(callback.from_user.id, "Manual stop by user")
 
         if result['success']:
@@ -268,7 +260,7 @@ async def active_trading_menu(callback: CallbackQuery):
         await callback.answer()
 
     except Exception as e:
-        logger.error(f"Ошибка в active_trading_menu: {e}")
+        logger.error(f"❌ Ошибка в active_trading_menu: {e}")
         await callback.answer("❌ Ошибка получения статуса", show_alert=True)
 
 
@@ -290,7 +282,7 @@ async def trade_statistics(callback: CallbackQuery):
 
 @router.callback_query(F.data == "trade_balance")
 async def trade_balance(callback: CallbackQuery):
-    """Баланс счёта - теперь с реальными данными"""
+    """Баланс счёта - с реальными данными"""
     if not config.is_user_allowed(callback.from_user.id):
         return
 
@@ -314,7 +306,7 @@ async def trade_balance(callback: CallbackQuery):
         )
 
     except Exception as e:
-        logger.error(f"Ошибка в trade_balance: {e}")
+        logger.error(f"❌ Ошибка в trade_balance: {e}")
 
         error_text = (
             f"💰 <b>Баланс счёта Bybit</b>\n\n"
@@ -362,7 +354,6 @@ async def trade_history(callback: CallbackQuery):
                 from src.utils.helpers import format_quantity
                 quantity_formatted = format_quantity(trade['quantity'])
             except (ImportError, AttributeError):
-                # Fallback если helpers недоступен
                 quantity_formatted = str(trade['quantity'])
 
             history_text += (
@@ -382,9 +373,9 @@ async def trade_history(callback: CallbackQuery):
             "отображаться все ваши сделки</i>\n\n"
         )
 
-    # Добавляем время обновления
-    update_time = datetime.now().strftime("%H:%M:%S")
-    history_text += f"🔄 <i>Обновлено: {update_time}</i>"
+    # Добавляем время обновления в МСК
+    update_time_msk = format_msk_time()
+    history_text += f"🔄 <i>Обновлено: {update_time_msk} МСК</i>"
 
     await callback.message.edit_text(
         history_text,
@@ -418,17 +409,15 @@ async def refresh_trade_history(callback: CallbackQuery):
         # Вызываем обновленную историю
         await trade_history(callback)
 
-        logger.info(f"✅ История сделок обновлена для пользователя {callback.from_user.id}")
-
     except Exception as e:
-        logger.error(f"Ошибка обновления истории для {callback.from_user.id}: {e}")
+        logger.error(f"❌ Ошибка обновления истории для {callback.from_user.id}: {e}")
 
         # В случае ошибки показываем сообщение об ошибке
         error_text = (
             f"📋 <b>История сделок</b>\n\n"
             f"❌ <b>Ошибка обновления истории</b>\n\n"
             f"🔧 <i>Попробуйте обновить снова через несколько секунд</i>\n\n"
-            f"🔄 <i>Время: {datetime.now().strftime('%H:%M:%S')}</i>"
+            f"🔄 <i>Время: {format_msk_time()} МСК</i>"
         )
 
         await callback.message.edit_text(
@@ -440,7 +429,7 @@ async def refresh_trade_history(callback: CallbackQuery):
 
 @router.callback_query(F.data == "refresh_balance")
 async def refresh_balance(callback: CallbackQuery):
-    """Обновление баланса - теперь с реальным получением данных"""
+    """Обновление баланса - с реальным получением данных"""
     if not config.is_user_allowed(callback.from_user.id):
         return
 
@@ -468,10 +457,8 @@ async def refresh_balance(callback: CallbackQuery):
             parse_mode='HTML'
         )
 
-        logger.info(f"✅ Баланс обновлен для пользователя {callback.from_user.id}")
-
     except Exception as e:
-        logger.error(f"Ошибка обновления баланса для {callback.from_user.id}: {e}")
+        logger.error(f"❌ Ошибка обновления баланса для {callback.from_user.id}: {e}")
 
         # В случае ошибки показываем сообщение об ошибке
         error_text = (

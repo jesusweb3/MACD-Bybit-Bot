@@ -2,6 +2,7 @@
 from typing import Dict, Any
 from ...database.database import db
 from ...utils.logger import logger
+from ...utils.helpers import format_msk_time
 from ...exchange.bybit import BybitClient
 
 
@@ -60,7 +61,7 @@ class TradeBotUtils:
         if not user_settings.get('bot_duration_hours'):
             missing_settings.append('Время работы')
 
-        total_count = 6  # Уменьшили с 7 до 6, убрали TP/SL
+        total_count = 6
         missing_count = len(missing_settings)
         complete = missing_count == 0
 
@@ -191,7 +192,6 @@ class TradeBotUtils:
     def get_statistics_text(telegram_id: int) -> str:
         """Текст статистики торговли с реальными данными"""
         from ...strategy import strategy_manager
-        from datetime import datetime
 
         # Получаем историю сделок из БД
         trades = db.get_user_trades_history(telegram_id, limit=100)
@@ -236,8 +236,8 @@ class TradeBotUtils:
         pnl_formatted = format_pnl(total_pnl, with_currency=False)
         win_rate_formatted = format_percentage(win_rate, 1)
 
-        # Время обновления
-        update_time = datetime.now().strftime("%H:%M:%S")
+        # Время обновления в МСК
+        update_time_msk = format_msk_time()
 
         return (
             f"📊 <b>Статистика торговли</b>\n\n"
@@ -248,7 +248,7 @@ class TradeBotUtils:
             f"📉 <b>Убыточных:</b> {losing_trades}\n\n"
             f"📊 <b>Текущая позиция:</b> {current_position}"
             f"{strategy_status_text}\n\n"
-            f"🔄 <i>Обновлено: {update_time}</i>"
+            f"🔄 <i>Обновлено: {update_time_msk} МСК</i>"
         )
 
     @staticmethod
@@ -284,14 +284,13 @@ class TradeBotUtils:
             return "нет активной стратегии"
 
         except Exception as e:
-            logger.error(f"Ошибка получения позиции для {telegram_id}: {e}")
+            logger.error(f"❌ Ошибка получения позиции для {telegram_id}: {e}")
             return "ошибка получения данных"
 
     @staticmethod
     async def get_balance_text(telegram_id: int) -> str:
         """Получение реального баланса счёта через Bybit API"""
         from ...strategy import strategy_manager
-        from datetime import datetime
 
         # Проверяем API настройки
         user_settings = db.get_user_settings(telegram_id)
@@ -309,8 +308,6 @@ class TradeBotUtils:
         secret_key = user_settings.get('bybit_secret_key')
 
         try:
-            logger.info(f"Получение баланса для пользователя {telegram_id}")
-
             # Используем async context manager для правильного управления ресурсами
             async with BybitClient(api_key, secret_key) as bybit_client:
                 # Получаем баланс
@@ -345,19 +342,18 @@ class TradeBotUtils:
                         f"🎯 <b>Состояние:</b> {strategy_status.get('position_state', 'Unknown')}"
                     )
 
-                # Время обновления
-                update_time = datetime.now().strftime("%H:%M:%S")
+                # Время обновления в МСК
+                update_time_msk = format_msk_time()
 
                 result_text = (
                     f"💰 <b>Баланс счёта Bybit</b>\n\n"
                     f"{balance_emoji} <b>Общий баланс:</b> {total_formatted} USDT\n"
                     f"✅ <b>Доступно:</b> {free_formatted} USDT\n"
                     f"🔒 <b>В позициях:</b> {used_formatted} USDT\n\n"
-                    f"🔄 <i>Обновлено: {update_time}</i>"
+                    f"🔄 <i>Обновлено: {update_time_msk} МСК</i>"
                     f"{strategy_text}"
                 )
 
-                logger.info(f"✅ Баланс получен для {telegram_id}: {total_formatted} USDT")
                 return result_text
 
         except Exception as e:

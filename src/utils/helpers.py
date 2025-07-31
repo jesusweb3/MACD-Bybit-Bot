@@ -1,5 +1,69 @@
 # src/utils/helpers.py
 from typing import Union
+from datetime import datetime, timezone, timedelta
+
+# Московская временная зона (UTC+3)
+MSK_TIMEZONE = timezone(timedelta(hours=3))
+
+
+def get_msk_time() -> datetime:
+    """Получение текущего времени в московской временной зоне"""
+    return datetime.now(MSK_TIMEZONE)
+
+
+def format_msk_time(dt: datetime = None, format_str: str = "%H:%M:%S") -> str:
+    """
+    Форматирование времени в московской временной зоне
+
+    Args:
+        dt: datetime объект (если None - берется текущее время)
+        format_str: строка форматирования
+
+    Returns:
+        Отформатированная строка времени в МСК
+    """
+    if dt is None:
+        dt = get_msk_time()
+    elif dt.tzinfo is None:
+        # Если timezone не указан, считаем что это UTC
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    # Конвертируем в московское время
+    msk_time = dt.astimezone(MSK_TIMEZONE)
+    return msk_time.strftime(format_str)
+
+
+def utc_to_msk_time(utc_timestamp: Union[int, float]) -> datetime:
+    """
+    Конвертация UTC timestamp в московское время
+
+    Args:
+        utc_timestamp: timestamp в секундах или миллисекундах
+
+    Returns:
+        datetime объект в московском времени
+    """
+    # Если timestamp в миллисекундах
+    if utc_timestamp > 1e10:
+        utc_timestamp = utc_timestamp / 1000
+
+    utc_time = datetime.fromtimestamp(utc_timestamp, tz=timezone.utc)
+    return utc_time.astimezone(MSK_TIMEZONE)
+
+
+def format_utc_to_msk(utc_timestamp: Union[int, float], format_str: str = "%H:%M:%S") -> str:
+    """
+    Форматирование UTC timestamp в московское время
+
+    Args:
+        utc_timestamp: timestamp в секундах или миллисекундах
+        format_str: строка форматирования
+
+    Returns:
+        Отформатированная строка времени в МСК
+    """
+    msk_time = utc_to_msk_time(utc_timestamp)
+    return msk_time.strftime(format_str)
 
 
 def format_balance(balance: Union[float, int, str]) -> str:

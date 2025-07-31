@@ -3,6 +3,7 @@ import sqlite3
 from typing import Optional, Dict, Any, List
 from ..utils.config import config
 from ..utils.logger import logger
+from ..utils.helpers import get_msk_time
 from datetime import datetime, UTC
 
 
@@ -71,7 +72,7 @@ class Database:
             """)
 
             conn.commit()
-            logger.info("Таблицы базы данных созданы")
+            logger.info("✅ Таблицы базы данных созданы")
 
     def get_or_create_user(self, telegram_id: int, username: Optional[str] = None) -> Dict[str, Any]:
         with sqlite3.connect(self.db_path) as conn:
@@ -90,7 +91,7 @@ class Database:
 
                 cursor.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,))
                 user = cursor.fetchone()
-                logger.info(f"Created new user: {telegram_id}")
+                logger.info(f"👤 Создан новый пользователь: {telegram_id}")
 
             return dict(user)
 
@@ -119,7 +120,6 @@ class Database:
                 """, values)
 
                 conn.commit()
-                logger.info(f"Updated settings for user {telegram_id}")
 
     def update_position_size(self, telegram_id: int, size_type: str, size_value: float) -> None:
         """Обновление размера позиции"""
@@ -141,10 +141,9 @@ class Database:
                 ))
 
                 conn.commit()
-                logger.info(f"Updated position size for user {telegram_id}: {size_type} = {size_value}")
 
         except Exception as e:
-            logger.error(f"Ошибка обновления размера позиции: {e}")
+            logger.error(f"❌ Ошибка обновления размера позиции для {telegram_id}: {e}")
 
     def get_position_size_info(self, telegram_id: int) -> Dict[str, Any]:
         """Получение информации о размере позиции"""
@@ -213,10 +212,9 @@ class Database:
                     strategy_status = 'running',
                     strategy_started_at = ?
                 WHERE telegram_id = ?
-            """, (strategy_name, datetime.now(UTC).isoformat(), telegram_id))
+            """, (strategy_name, get_msk_time().isoformat(), telegram_id))
 
             conn.commit()
-            logger.info(f"Активирована стратегия {strategy_name} для пользователя {telegram_id}")
 
             # Возвращаем telegram_id как strategy_id для совместимости
             return telegram_id
@@ -231,13 +229,13 @@ class Database:
 
             if status == 'stopped':
                 updates.append('strategy_stopped_at = ?')
-                values.append(datetime.now(UTC).isoformat())
+                values.append(get_msk_time().isoformat())
                 # Очищаем активную стратегию
                 updates.append('active_strategy_name = NULL')
 
             # Можно добавить обработку error_message в будущем если понадобится
             if error_message:
-                logger.warning(f"Strategy error for user {strategy_id}: {error_message}")
+                logger.warning(f"⚠️ Ошибка стратегии для пользователя {strategy_id}: {error_message}")
 
             values.append(strategy_id)
 
@@ -248,7 +246,6 @@ class Database:
             """, values)
 
             conn.commit()
-            logger.info(f"Обновлен статус стратегии для пользователя {strategy_id}: {status}")
 
     def get_active_strategy(self, telegram_id: int) -> Optional[Dict[str, Any]]:
         """Получение активной стратегии пользователя"""
@@ -282,12 +279,11 @@ class Database:
                 (telegram_id, symbol, side, quantity, order_id, opened_at)
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (telegram_id, symbol, side, quantity, order_id,
-                  datetime.now(UTC).isoformat()))
+                  get_msk_time().isoformat()))
 
             trade_id = cursor.lastrowid
             conn.commit()
 
-            logger.info(f"Создана запись сделки ID={trade_id}")
             return trade_id
 
     def update_trade_record(self, trade_id: int, exit_price: Optional[float] = None,
@@ -313,7 +309,7 @@ class Database:
 
                 if status == 'closed':
                     update_fields.append('closed_at = ?')
-                    values.append(datetime.now(UTC).isoformat())
+                    values.append(get_msk_time().isoformat())
 
             if update_fields:
                 values.append(trade_id)
@@ -324,7 +320,6 @@ class Database:
                 """, values)
 
                 conn.commit()
-                logger.info(f"Обновлена запись сделки {trade_id}")
 
     def get_user_trades_history(self, telegram_id: int, limit: int = 20) -> List[Dict[str, Any]]:
         """Получение истории сделок пользователя"""
@@ -345,9 +340,7 @@ class Database:
     @staticmethod
     def get_user_strategies_history(telegram_id: int, limit: int = 10) -> List[Dict[str, Any]]:
         """Получение истории стратегий пользователя - упрощенная версия"""
-        # Возвращаем пустой список, так как теперь история встроена в пользователя
-        # Параметры оставлены для совместимости с существующим кодом
-        _ = telegram_id, limit  # Подавляем предупреждения о неиспользуемых параметрах
+        _ = telegram_id, limit
         return []
 
 

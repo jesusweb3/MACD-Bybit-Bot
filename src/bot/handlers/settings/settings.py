@@ -56,7 +56,7 @@ def count_filled_settings(user_settings: dict, telegram_id: int) -> tuple[int, i
         filled_settings.append('duration')
 
     filled_count = len(filled_settings)
-    total_count = 6  # Уменьшили с 7 до 6, убрали TP/SL
+    total_count = 6
 
     return filled_count, total_count
 
@@ -204,7 +204,7 @@ async def settings_menu(callback: CallbackQuery):
     await callback.answer()
 
 
-# API обработчики (без изменений)
+# API обработчики
 @router.callback_query(F.data == "settings_api")
 async def api_menu(callback: CallbackQuery):
     user_settings = db.get_user_settings(callback.from_user.id)
@@ -255,7 +255,7 @@ async def process_api_key(message: Message, state: FSMContext):
 
     db.update_user_settings(message.from_user.id, bybit_api_key=api_key)
     await state.clear()
-    logger.info(f"User {message.from_user.id} updated API key")
+    logger.info(f"⚙️ Пользователь {message.from_user.id} обновил API ключ")
 
     user_settings = db.get_user_settings(message.from_user.id)
     api_key_status = "✅ Установлен" if user_settings.get('bybit_api_key') else "❌ Не установлен"
@@ -307,7 +307,7 @@ async def process_secret_key(message: Message, state: FSMContext):
 
     db.update_user_settings(message.from_user.id, bybit_secret_key=secret_key)
     await state.clear()
-    logger.info(f"User {message.from_user.id} updated secret key")
+    logger.info(f"⚙️ Пользователь {message.from_user.id} обновил Secret ключ")
 
     user_settings = db.get_user_settings(message.from_user.id)
     api_key_status = "✅ Установлен" if user_settings.get('bybit_api_key') else "❌ Не установлен"
@@ -358,7 +358,7 @@ async def process_trading_pair(message: Message, state: FSMContext):
 
     db.update_user_settings(message.from_user.id, trading_pair=pair)
     await state.clear()
-    logger.info(f"User {message.from_user.id} set trading pair: {pair}")
+    logger.info(f"⚙️ Пользователь {message.from_user.id} установил торговую пару: {pair}")
     await show_settings_menu_after_update(message, message_id)
 
 
@@ -381,7 +381,7 @@ async def process_leverage(callback: CallbackQuery):
 
     db.update_user_settings(callback.from_user.id, leverage=leverage)
     await callback.answer(f"✅ Плечо установлено: {leverage}x")
-    logger.info(f"User {callback.from_user.id} set leverage: {leverage}")
+    logger.info(f"⚙️ Пользователь {callback.from_user.id} установил плечо: {leverage}x")
     await show_settings_menu(callback)
 
 
@@ -429,11 +429,10 @@ async def process_position_size(message: Message, state: FSMContext):
     )
 
     await state.clear()
-    logger.info(f"User {message.from_user.id} set position size: {parse_result['display']}")
+    logger.info(f"⚙️ Пользователь {message.from_user.id} установил размер позиции: {parse_result['display']}")
     await show_settings_menu_after_update(message, message_id)
 
 
-# НОВЫЙ УПРОЩЕННЫЙ ОБРАБОТЧИК ТАЙМФРЕЙМА
 @router.callback_query(F.data == "settings_timeframe")
 async def timeframe_menu(callback: CallbackQuery):
     """Упрощенное меню выбора единого таймфрейма"""
@@ -464,7 +463,7 @@ async def process_timeframe(callback: CallbackQuery):
     # Сохраняем единый таймфрейм
     db.update_user_settings(callback.from_user.id, timeframe=timeframe)
     await callback.answer(f"✅ Таймфрейм установлен: {timeframe}")
-    logger.info(f"User {callback.from_user.id} set timeframe: {timeframe}")
+    logger.info(f"⚙️ Пользователь {callback.from_user.id} установил таймфрейм: {timeframe}")
 
     # Возвращаемся в главное меню настроек
     await show_settings_menu(callback)
@@ -509,5 +508,5 @@ async def process_bot_duration(message: Message, state: FSMContext):
 
     db.update_user_settings(message.from_user.id, bot_duration_hours=duration)
     await state.clear()
-    logger.info(f"User {message.from_user.id} set bot duration: {duration} hours")
+    logger.info(f"⚙️ Пользователь {message.from_user.id} установил время работы: {duration} часов")
     await show_settings_menu_after_update(message, message_id)

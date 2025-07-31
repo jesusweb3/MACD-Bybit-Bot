@@ -6,6 +6,7 @@ from src.bot.keyboards.start_menu import get_start_menu, get_back_to_start_menu
 from src.database.database import db
 from src.utils.logger import logger
 from src.utils.config import config
+from src.utils.helpers import format_msk_time
 
 router = Router()
 
@@ -15,8 +16,9 @@ async def start_command(message: Message):
     """Обработчик команды /start"""
     # Тихо игнорируем неавторизованных пользователей
     if not config.is_user_allowed(message.from_user.id):
+        current_time_msk = format_msk_time()
         logger.warning(
-            f"Unauthorized access attempt from user {message.from_user.id} (@{message.from_user.username}) - ignored silently")
+            f"🚫 Неавторизованный доступ от пользователя {message.from_user.id} (@{message.from_user.username}) в {current_time_msk} МСК")
         return
 
     # Создаем или получаем пользователя
@@ -33,7 +35,9 @@ async def start_command(message: Message):
     )
 
     await message.answer(welcome_text, reply_markup=get_start_menu())
-    logger.info(f"User {message.from_user.id} started bot")
+
+    current_time_msk = format_msk_time()
+    logger.info(f"👋 Пользователь {message.from_user.id} запустил бота в {current_time_msk} МСК")
 
 
 @router.callback_query(F.data == "start_menu")
@@ -41,7 +45,8 @@ async def start_menu_callback(callback: CallbackQuery):
     """Возврат к стартовому меню"""
     # Тихо игнорируем неавторизованных пользователей
     if not config.is_user_allowed(callback.from_user.id):
-        logger.warning(f"Unauthorized callback from user {callback.from_user.id} - ignored silently")
+        current_time_msk = format_msk_time()
+        logger.warning(f"🚫 Неавторизованный callback от пользователя {callback.from_user.id} в {current_time_msk} МСК")
         return  # Никакого ответа в callback
 
     await callback.message.edit_text(

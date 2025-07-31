@@ -2,7 +2,21 @@
 import logging
 import sys
 from pathlib import Path
+from datetime import datetime
 from .config import config
+from .helpers import MSK_TIMEZONE
+
+
+class MSKFormatter(logging.Formatter):
+    """Форматтер с московским временем"""
+
+    def formatTime(self, record, datefmt=None):
+        # Конвертируем время записи в московское время
+        dt = datetime.fromtimestamp(record.created, tz=MSK_TIMEZONE)
+        if datefmt:
+            return dt.strftime(datefmt)
+        else:
+            return dt.strftime('%Y-%m-%d %H:%M:%S MSK')
 
 
 def setup_logger(name: str = __name__) -> logging.Logger:
@@ -13,9 +27,10 @@ def setup_logger(name: str = __name__) -> logging.Logger:
 
     logger.setLevel(getattr(logging, config.log_level))
 
-    formatter = logging.Formatter(
+    # Используем кастомный форматтер с московским временем
+    formatter = MSKFormatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+        datefmt='%Y-%m-%d %H:%M:%S MSK'
     )
 
     # Консольный handler с UTF-8 для Windows

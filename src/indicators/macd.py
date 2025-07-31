@@ -13,8 +13,6 @@ class MACDIndicator:
 
     Поддерживаемые таймфреймы: 5m, 45m
     Обновления: каждую минуту с пересчетом MACD для выбранного таймфрейма
-
-    ИСПРАВЛЕНО: Корректная инициализация текущей свечи с учетом пропущенных минут
     """
 
     def __init__(self, symbol: str, timeframe: str,
@@ -26,7 +24,7 @@ class MACDIndicator:
             timeframe: Целевой таймфрейм для MACD (5m, 45m)
             fast_period: Период быстрой EMA (по умолчанию 12)
             slow_period: Период медленной EMA (по умолчанию 26)
-            signal_period: Период сигнальной линии (по умолчанию 9)
+            signal_period: Период сигнальной линии (по умолчанию 7)
             min_history: Минимальное количество свечей для расчета
         """
         self.symbol = symbol
@@ -59,9 +57,11 @@ class MACDIndicator:
         self.last_macd_line: Optional[float] = None
         self.last_signal_line: Optional[float] = None
 
-        logger.info(f"MACD инициализирован для {symbol}")
-        logger.info(f"Режим: Real-time обновления каждую минуту для {timeframe} MACD")
-        logger.info(f"Параметры MACD: {fast_period}, {slow_period}, {signal_period}")
+        # Счетчики для статистики
+        self.total_candles_processed = 0
+
+        logger.info(
+            f"🔧 MACD индикатор инициализирован: {symbol} {timeframe} (EMA: {fast_period}/{slow_period}, Signal: {signal_period})")
 
     def add_callback(self, callback: Union[
         Callable[[Dict[str, Any]], None], Callable[[Dict[str, Any]], Awaitable[None]]]):
@@ -102,17 +102,6 @@ class MACDIndicator:
         interval_start_minutes = interval_index * 45
         interval_start_time = day_start + timedelta(minutes=interval_start_minutes)
         return int(interval_start_time.timestamp() * 1000)
-
-    def _log_candle_timing_info(self, candle_start_time_ms: int):
-        """Логирование информации о времени свечи"""
-        start_time = datetime.fromtimestamp(candle_start_time_ms / 1000, tz=timezone.utc)
-
-        if self.timeframe == "5m":
-            end_time = start_time + timedelta(minutes=5)
-            logger.debug(f"⏰ Текущая 5m свеча: {start_time.strftime('%H:%M')}-{end_time.strftime('%H:%M')} UTC")
-        elif self.timeframe == "45m":
-            end_time = start_time + timedelta(minutes=45)
-            logger.info(f"⏰ Текущая 45m свеча: {start_time.strftime('%H:%M')}-{end_time.strftime('%H:%M')} UTC")
 
     @staticmethod
     def calculate_ema(data: pd.Series, period: int) -> pd.Series:
@@ -212,7 +201,7 @@ class MACDIndicator:
             return []
 
         klines_15m.sort(key=lambda x: x['timestamp'])
-        logger.info(f"Строим 45m свечи из {len(klines_15m)} свечей 15m")
+        logger.info(f"📊 Строим 45m свечи из {len(klines_15m)} свечей 15m")
 
         custom_45m_klines = []
         grouped_klines = {}
@@ -244,10 +233,7 @@ class MACDIndicator:
                     merged_45m = self._merge_15m_to_45m_candles(klines_group)
                     custom_45m_klines.append(merged_45m)
 
-                    start_time = datetime.fromtimestamp(merged_45m['timestamp'] / 1000, tz=timezone.utc)
-                    logger.debug(f"Создана 45m свеча: {start_time.strftime('%Y-%m-%d %H:%M')} UTC")
-
-        logger.info(f"Создано {len(custom_45m_klines)} полных 45m свечей")
+        logger.info(f"✅ Создано {len(custom_45m_klines)} полных 45m свечей")
         return custom_45m_klines
 
     @staticmethod
@@ -295,8 +281,8 @@ class MACDIndicator:
         return merged
 
     async def load_historical_data(self):
-        """ИСПРАВЛЕНО: Загрузка исторических данных с корректной инициализацией текущей свечи"""
-        logger.info(f"Загружаем историю для {self.symbol} (целевой TF: {self.timeframe})")
+        """Загрузка исторических данных с корректной инициализацией текущей свечи"""
+        logger.info(f"📈 Загружаем историю {self.symbol} для {self.timeframe} MACD")
 
         # Загружаем исторические данные
         if self.timeframe == '5m':
@@ -304,7 +290,6 @@ class MACDIndicator:
         elif self.timeframe == '45m':
             # Для 45m используем 15m и строим кастомные
             base_limit = self.min_history * 3 + 50
-            logger.info(f"Для 45m загружаем {base_limit} базовых 15m свечей")
             base_klines_15m = await self.binance_client.get_klines(self.symbol, '15m', base_limit)
             if not base_klines_15m:
                 raise Exception("Не удалось загрузить 15m данные для 45m")
@@ -319,55 +304,46 @@ class MACDIndicator:
 
         if len(self.target_klines) < self.min_history:
             logger.warning(
-                f"Получено {len(self.target_klines)} {self.timeframe} свечей, меньше требуемых {self.min_history}")
+                f"⚠️ Получено {len(self.target_klines)} {self.timeframe} свечей, меньше требуемых {self.min_history}")
 
-        # ИСПРАВЛЕНО: Правильная инициализация текущей свечи с учетом пропущенных минут
+        # Инициализируем текущую свечу с учетом пропущенных минут
         await self._initialize_current_candle_with_missing_minutes()
 
         # Конвертируем в DataFrame и рассчитываем MACD
         self.df = self.klines_to_dataframe(self.target_klines)
         self.df = self.calculate_macd(self.df)
 
-        logger.info(f"✅ История загружена: {len(self.df)} свечей {self.timeframe} (с корректной инициализацией)")
+        logger.info(f"✅ История загружена: {len(self.df)} свечей {self.timeframe}")
 
     async def _initialize_current_candle_with_missing_minutes(self):
-        """НОВАЯ ФУНКЦИЯ: Инициализация текущей свечи с учетом пропущенных минут"""
+        """Инициализация текущей свечи с учетом пропущенных минут"""
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         self.current_target_start_time = self._get_target_candle_start_time(now_ms)
 
         current_time = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
         candle_start_time = datetime.fromtimestamp(self.current_target_start_time / 1000, tz=timezone.utc)
 
-        logger.info(f"🕐 Текущее время: {current_time.strftime('%H:%M:%S')}")
-        logger.info(f"📊 Начало текущего {self.timeframe} интервала: {candle_start_time.strftime('%H:%M:%S')}")
-
         # Проверяем, нужно ли собрать пропущенные минуты
         minutes_elapsed = (current_time - candle_start_time).total_seconds() / 60
 
         if minutes_elapsed > 0 and minutes_elapsed < self._get_timeframe_minutes():
-            logger.info(f"⚠️ Обнаружено {minutes_elapsed:.0f} пропущенных минут в текущем {self.timeframe} интервале")
+            logger.info(f"🔄 Собираем {minutes_elapsed:.0f} пропущенных минут в текущем {self.timeframe} интервале")
             await self._collect_missing_minutes_for_current_candle(candle_start_time, current_time)
         else:
-            logger.info("✅ Пропущенных минут нет, можем начинать с real-time потока")
             self.current_target_candle = None
 
     async def _collect_missing_minutes_for_current_candle(self, candle_start_time: datetime, current_time: datetime):
-        """НОВАЯ ФУНКЦИЯ: Сбор пропущенных минут для текущей формируемой свечи"""
+        """Сбор пропущенных минут для текущей формируемой свечи"""
         try:
-            logger.info(f"🔄 Собираем пропущенные минуты для текущей {self.timeframe} свечи...")
-
             # Определяем сколько минут нужно собрать
             minutes_to_collect = int((current_time - candle_start_time).total_seconds() / 60)
 
             if minutes_to_collect <= 0:
-                logger.info("⚠️ Нет минут для сбора")
                 self.current_target_candle = None
                 return
 
             # Для 45m может быть много минут, ограничиваем запрос
             max_request = min(minutes_to_collect + 10, 60)  # Максимум 60 минут
-
-            logger.info(f"📊 Запрашиваем последние {max_request} минутных свечей (нужно собрать {minutes_to_collect})")
 
             # Запрашиваем минутные свечи
             recent_1m_klines = await self.binance_client.get_klines(
@@ -375,7 +351,6 @@ class MACDIndicator:
             )
 
             if not recent_1m_klines:
-                logger.warning("⚠️ Не удалось получить минутные свечи, начинаем без текущей свечи")
                 self.current_target_candle = None
                 return
 
@@ -396,21 +371,9 @@ class MACDIndicator:
                 # Устанавливаем правильное время начала интервала
                 self.current_target_candle['timestamp'] = self.current_target_start_time
 
-                # Логируем детали
-                first_minute = datetime.fromtimestamp(current_interval_minutes[0]['timestamp'] / 1000, tz=timezone.utc)
-                last_minute = datetime.fromtimestamp(current_interval_minutes[-1]['timestamp'] / 1000, tz=timezone.utc)
-
                 logger.info(f"✅ Собрана текущая {self.timeframe} свеча из {len(current_interval_minutes)} минут")
-                logger.info(f"📊 Период: {first_minute.strftime('%H:%M')} - {last_minute.strftime('%H:%M')}")
-                logger.info(f"💰 Текущая цена: {self.current_target_candle['close']}")
-
-                # Логируем какие именно минуты собрали
-                if self.timeframe == "45m" and len(current_interval_minutes) > 5:
-                    logger.info(f"🔍 Собрано минут для 45m интервала: {len(current_interval_minutes)}/{45}")
 
             else:
-                logger.warning(f"⚠️ Минуты для текущего {self.timeframe} интервала не найдены в полученных данных")
-                logger.debug(f"🔍 Ожидаемое время начала интервала: {candle_start_time.strftime('%H:%M:%S')}")
                 self.current_target_candle = None
 
         except Exception as e:
@@ -422,15 +385,15 @@ class MACDIndicator:
         try:
             await self._process_1m_kline(kline_1m)
         except Exception as e:
-            logger.error(f"Ошибка в kline_callback: {e}")
+            logger.error(f"❌ Ошибка в kline_callback: {e}")
 
     async def _process_1m_kline(self, kline_1m: Dict[str, Any]):
         """Обработка новой минутной свечи с правильной логикой завершения свечей"""
-        kline_time = datetime.fromtimestamp(kline_1m['timestamp'] / 1000, tz=timezone.utc)
-        current_time = datetime.now(timezone.utc)
-        delay_seconds = (current_time - kline_time).total_seconds()
+        from ..utils.helpers import format_utc_to_msk
 
-        logger.debug(f"📊 Получена 1m свеча: {kline_time.strftime('%H:%M:%S')} UTC (задержка: {delay_seconds:.1f}с)")
+        self.total_candles_processed += 1
+
+        kline_time_msk = format_utc_to_msk(kline_1m['timestamp'])
 
         # Определяем к какой целевой свече относится эта минутная
         target_start_time = self._get_target_candle_start_time(kline_1m['timestamp'])
@@ -450,8 +413,8 @@ class MACDIndicator:
             # Проверяем, является ли эта минута ПОСЛЕДНЕЙ в целевом интервале
             await self._check_if_target_candle_should_close(kline_1m)
 
-        # Пересчитываем MACD и проверяем сигналы
-        await self._recalculate_macd_and_check_signals()
+        # НОВОЕ: Пересчитываем MACD и логируем значения после каждой минуты
+        await self._recalculate_macd_and_log_values(kline_time_msk)
 
     async def _check_if_target_candle_should_close(self, kline_1m: Dict[str, Any]):
         """Проверяем, должна ли завершиться целевая свеча после этой минутной"""
@@ -464,11 +427,12 @@ class MACDIndicator:
 
         # Если следующая минута будет в новом целевом интервале - завершаем текущую свечу
         if next_target_start != self.current_target_start_time:
-            logger.debug(f"🔚 Последняя минута в {self.timeframe} интервале - завершаем свечу")
             await self._complete_target_candle_immediately()
 
     def _start_new_target_candle(self, target_start_time: int, first_kline_1m: Dict[str, Any]):
         """Начало новой целевой свечи"""
+        from ..utils.helpers import format_utc_to_msk
+
         self.current_target_start_time = target_start_time
         self.current_target_candle = {
             'timestamp': target_start_time,
@@ -482,8 +446,11 @@ class MACDIndicator:
             'trades_count': first_kline_1m.get('trades_count', 0)
         }
 
-        self._log_candle_timing_info(target_start_time)
-        logger.debug(f"🆕 Начата новая {self.timeframe} свеча")
+        start_time_msk = format_utc_to_msk(target_start_time, "%H:%M")
+        end_time_ms = target_start_time + (self._get_timeframe_minutes() * 60 * 1000)
+        end_time_msk = format_utc_to_msk(end_time_ms, "%H:%M")
+
+        logger.info(f"🆕 Начат новый {self.timeframe} интервал: {start_time_msk}-{end_time_msk} МСК")
 
     def _update_current_target_candle(self, kline_1m: Dict[str, Any]):
         """Обновление текущей целевой свечи новой минутной свечей"""
@@ -499,19 +466,20 @@ class MACDIndicator:
         self.current_target_candle['quote_volume'] += kline_1m.get('quote_volume', 0)
         self.current_target_candle['trades_count'] += kline_1m.get('trades_count', 0)
 
-        logger.debug(f"Обновлена {self.timeframe} свеча, цена: {kline_1m['close']}")
-
     async def _complete_target_candle_immediately(self):
-        """Немедленное завершение целевой свечи (логируется сразу)"""
+        """Немедленное завершение целевой свечи"""
+        from ..utils.helpers import format_utc_to_msk
+
         if self.current_target_candle is None:
             return
 
-        # Логируем завершение СРАЗУ
-        start_time = datetime.fromtimestamp(self.current_target_candle['timestamp'] / 1000, tz=timezone.utc)
-        end_time = start_time + timedelta(minutes=self._get_timeframe_minutes())
+        # Логируем завершение
+        start_time_msk = format_utc_to_msk(self.current_target_candle['timestamp'], "%H:%M")
+        end_time_ms = self.current_target_candle['timestamp'] + (self._get_timeframe_minutes() * 60 * 1000)
+        end_time_msk = format_utc_to_msk(end_time_ms, "%H:%M")
 
         logger.info(
-            f"✅ Завершена {self.timeframe} свеча: {start_time.strftime('%H:%M')}-{end_time.strftime('%H:%M')} UTC, цена: {self.current_target_candle['close']}")
+            f"✅ Завершен {self.timeframe} интервал: {start_time_msk}-{end_time_msk} МСК, цена: {self.current_target_candle['close']}")
 
         # Добавляем в историю
         self.target_klines.append(self.current_target_candle.copy())
@@ -520,10 +488,8 @@ class MACDIndicator:
         if len(self.target_klines) > self.min_history * 2:
             self.target_klines = self.target_klines[-self.min_history:]
 
-        # НЕ обнуляем current_target_candle - это сделается при запуске новой свечи
-
     async def _complete_target_candle(self):
-        """Завершение целевой свечи при переходе к новому интервалу (без повторного логирования)"""
+        """Завершение целевой свечи при переходе к новому интервалу"""
         if self.current_target_candle is None:
             return
 
@@ -531,8 +497,6 @@ class MACDIndicator:
         if len(self.target_klines) > 0:
             last_completed = self.target_klines[-1]
             if last_completed['timestamp'] == self.current_target_candle['timestamp']:
-                # Свеча уже была добавлена в историю через _complete_target_candle_immediately
-                logger.debug("Свеча уже была завершена ранее, пропускаем дублирование")
                 return
 
         # Если свеча еще не была завершена - добавляем в историю без логирования
@@ -542,8 +506,8 @@ class MACDIndicator:
         if len(self.target_klines) > self.min_history * 2:
             self.target_klines = self.target_klines[-self.min_history:]
 
-    async def _recalculate_macd_and_check_signals(self):
-        """Пересчет MACD с текущими данными и проверка сигналов"""
+    async def _recalculate_macd_and_log_values(self, kline_time_msk: str):
+        """НОВАЯ ФУНКЦИЯ: Пересчет MACD и логирование значений после каждой минуты"""
         if self.current_target_candle is None:
             return
 
@@ -560,14 +524,22 @@ class MACDIndicator:
         if len(temp_df) < self.slow_period:
             return
 
+        # Получаем текущие значения MACD
+        current = temp_df.iloc[-1]
+        current_macd = current['macd_line']
+        current_signal = current['signal_line']
+        current_histogram = current['histogram']
+        current_price = current['close']
+
         # Проверяем сигналы
         signal = self.detect_macd_signals(temp_df)
 
         if signal:
-            logger.info(f"🎯 REAL-TIME ПЕРЕСЕЧЕНИЕ! Сигнал: {signal['type']} на {self.timeframe}")
-            logger.info(f"   Тип пересечения: {signal['crossover_type']}")
+            # НАЙДЕНО ПЕРЕСЕЧЕНИЕ
+            logger.info(f"🎯 ПЕРЕСЕЧЕНИЕ MACD! {signal['crossover_type'].upper()} сигнал {signal['type'].upper()}")
             logger.info(
-                f"   Цена: {signal['price']}, MACD: {signal['macd_line']:.6f} → Signal: {signal['signal_line']:.6f}")
+                f"   📊 Цена: {current_price:.2f} | MACD: {current_macd:.6f} | Signal: {current_signal:.6f} | Hist: {current_histogram:.6f}")
+            logger.info(f"   ⏰ Время: {kline_time_msk} МСК | TF: {self.timeframe}")
 
             # Вызываем callback'и
             for callback in self.callbacks:
@@ -577,7 +549,11 @@ class MACDIndicator:
                     else:
                         callback(signal)
                 except Exception as e:
-                    logger.error(f"Ошибка в callback: {e}")
+                    logger.error(f"❌ Ошибка в callback: {e}")
+        else:
+            # ПЕРЕСЕЧЕНИЯ НЕТ - логируем только значения
+            logger.info(
+                f"📊 СВЕЧА ПОЛУЧЕНА - ЗНАЧЕНИЯ MACD: Цена: {current_price:.2f} | MACD: {current_macd:.6f} | Signal: {current_signal:.6f} | Hist: {current_histogram:.6f} | ПЕРЕСЕЧЕНИЯ НЕТУ")
 
     async def start(self):
         """Запуск индикатора"""
@@ -585,15 +561,13 @@ class MACDIndicator:
             logger.warning("MACD индикатор уже запущен")
             return
 
-        logger.info(f"🚀 Запускаем Real-time MACD для {self.symbol} на {self.timeframe}")
+        logger.info(f"🚀 Запуск Real-time MACD: {self.symbol} {self.timeframe}")
 
         try:
-            # Загружаем историю с корректной инициализацией
+            # Загружаем историю
             await self.load_historical_data()
 
             # Запускаем WebSocket поток для минутных данных
-            logger.info("🔄 Запускаем WebSocket поток для 1m данных...")
-
             def callback_wrapper(kline: Dict[str, Any]) -> None:
                 asyncio.create_task(self.kline_callback(kline))
 
@@ -603,8 +577,7 @@ class MACDIndicator:
 
             self.is_running = True
 
-            logger.info("✅ Real-time MACD индикатор запущен и готов к работе")
-            logger.info(f"📊 Анализируем {self.timeframe} MACD с обновлениями каждую минуту")
+            logger.info("✅ Real-time MACD индикатор запущен")
 
         except Exception as e:
             logger.error(f"❌ Ошибка запуска Real-time MACD: {e}")
@@ -616,7 +589,7 @@ class MACDIndicator:
         if not self.is_running:
             return
 
-        logger.info("⏹️ Останавливаем Real-time MACD индикатор...")
+        logger.info("⏹️ Остановка Real-time MACD индикатора...")
 
         try:
             if self.stream_active:
@@ -630,16 +603,15 @@ class MACDIndicator:
             self.last_signal_line = None
 
             self.is_running = False
-            logger.info("✅ Real-time MACD индикатор остановлен")
+            logger.info(f"✅ MACD индикатор остановлен (обработано {self.total_candles_processed} минутных свечей)")
 
         except Exception as e:
-            logger.error(f"Ошибка остановки MACD индикатора: {e}")
+            logger.error(f"❌ Ошибка остановки MACD индикатора: {e}")
 
     async def close(self):
         """Закрытие индикатора и освобождение ресурсов"""
         await self.stop()
         await self.binance_client.close()
-        logger.info("🔒 Real-time MACD индикатор закрыт")
 
     def get_current_macd_values(self) -> Optional[Dict[str, Any]]:
         """Получение текущих значений MACD"""
@@ -671,12 +643,12 @@ class MACDIndicator:
         status = {
             'symbol': self.symbol,
             'timeframe': self.timeframe,
-            'is_realtime': True,
             'is_running': self.is_running,
             'stream_active': self.stream_active,
             'target_candles_count': len(self.target_klines),
             'has_current_candle': self.current_target_candle is not None,
-            'callbacks_count': len(self.callbacks)
+            'callbacks_count': len(self.callbacks),
+            'total_candles_processed': self.total_candles_processed
         }
 
         if self.current_target_candle:
