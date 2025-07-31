@@ -558,6 +558,5 @@ class MACDStrategy:
             'leverage': self.user_settings.get('leverage'),
             'timeframe': self.timeframe,
             'position_size': position_size_info.get('display', 'не установлен'),
-            'bot_duration_hours': self.user_settings.get('bot_duration_hours'),
             'mode': 'Real-time динамический расчет размера'
         }

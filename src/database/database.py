@@ -16,7 +16,7 @@ class Database:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
 
-            # ТАБЛИЦА ПОЛЬЗОВАТЕЛЕЙ без TP/SL полей
+            # ТАБЛИЦА ПОЛЬЗОВАТЕЛЕЙ без bot_duration_hours поля
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,9 +37,6 @@ class Database:
 
                     -- ЕДИНЫЙ таймфрейм
                     timeframe TEXT,
-
-                    -- Время работы бота
-                    bot_duration_hours INTEGER,
 
                     -- Активная стратегия
                     active_strategy_name TEXT,

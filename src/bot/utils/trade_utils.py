@@ -8,10 +8,10 @@ from ...exchange.bybit import BybitClient
 
 class TradeBotStatus:
     """Статусы торгового бота"""
-    WAITING = "waiting"  # Ожидает запуска
-    TRADING = "trading"  # Активная торговля
-    STOPPED = "stopped"  # Остановлен
-    ERROR = "error"  # Ошибка
+    WAITING = "waiting"
+    TRADING = "trading"
+    STOPPED = "stopped"
+    ERROR = "error"
 
 
 class TradeBotUtils:
@@ -25,11 +25,10 @@ class TradeBotUtils:
         if not user_settings:
             return {
                 'complete': False,
-                'missing_count': 6,
-                'total_count': 6,
+                'missing_count': 5,
+                'total_count': 5,
                 'missing_settings': [
-                    'API ключи', 'Торговая пара', 'Плечо', 'Размер позиции',
-                    'Таймфрейм', 'Время работы'
+                    'API ключи', 'Торговая пара', 'Плечо', 'Размер позиции', 'Таймфрейм'
                 ]
             }
 
@@ -57,11 +56,7 @@ class TradeBotUtils:
         if not timeframe or timeframe not in ['5m', '45m']:
             missing_settings.append('Таймфрейм')
 
-        # Проверяем время работы
-        if not user_settings.get('bot_duration_hours'):
-            missing_settings.append('Время работы')
-
-        total_count = 6
+        total_count = 5
         missing_count = len(missing_settings)
         complete = missing_count == 0
 
@@ -88,7 +83,6 @@ class TradeBotUtils:
             # Если стратегия активна - показываем красивый статус
             strategy_status = strategy_manager.get_strategy_status(telegram_id)
             strategy_name = strategy_status.get('strategy_name', 'MACD Full')
-            position_state = strategy_status.get('position_state', 'Unknown')
 
             # Получаем настройки пользователя для отображения
             user_settings = db.get_user_settings(telegram_id)
@@ -100,13 +94,6 @@ class TradeBotUtils:
             position_size_info = db.get_position_size_info(telegram_id)
             position_size = position_size_info.get('display', 'Unknown')
 
-            # Статус позиции с эмодзи
-            position_display = {
-                'no_position': 'Ожидание сигнала',
-                'long_position': 'LONG позиция',
-                'short_position': 'SHORT позиция'
-            }.get(position_state, position_state)
-
             text = (
                 f"🤖 <b>Торговый бот MACD</b>\n\n"
                 f"📊 <b>Статус:</b> 🚀 Стратегия запущена!\n\n"
@@ -114,8 +101,7 @@ class TradeBotUtils:
                 f"💰 <b>Пара:</b> {trading_pair}\n"
                 f"⚡ <b>Плечо:</b> {leverage}x\n"
                 f"📊 <b>Размер:</b> {position_size}\n"
-                f"⏱️ <b>Таймфрейм:</b> {timeframe}\n"
-                f"📈 <b>Позиция:</b> {position_display}"
+                f"⏱️ <b>Таймфрейм:</b> {timeframe}"
             )
 
         else:
@@ -167,7 +153,6 @@ class TradeBotUtils:
         trading_pair = user_settings.get('trading_pair', 'Не установлена')
         leverage = user_settings.get('leverage', 'Не установлено')
         timeframe = user_settings.get('timeframe', 'Не установлен')
-        duration = user_settings.get('bot_duration_hours', 'Не установлено')
 
         # Размер позиции
         position_size_info = db.get_position_size_info(telegram_id)
@@ -180,10 +165,8 @@ class TradeBotUtils:
             f"💰 Пара: {trading_pair}\n"
             f"⚡ Плечо: {leverage}x\n"
             f"📊 Размер: {position_size}\n"
-            f"⏱️ Таймфрейм: {timeframe}\n"
-            f"🕒 Работа: {duration}ч\n\n"
-            f"❗ <b>Внимание:</b> После запуска бот будет торговать автоматически!\n"
-            f"Убедитесь, что все параметры настроены корректно."
+            f"⏱️ Таймфрейм: {timeframe}\n\n"
+            f"❗ <b>Внимание:</b> Убедитесь, что все параметры настроены корректно!"
         )
 
         return text
@@ -217,9 +200,6 @@ class TradeBotUtils:
         user_settings = db.get_user_settings(telegram_id)
         trading_pair = user_settings.get('trading_pair') if user_settings else None
 
-        # Проверяем активную стратегию и текущую позицию
-        current_position = TradeBotUtils._get_current_position(telegram_id, trading_pair)
-
         # Статус стратегии
         is_active = strategy_manager.is_strategy_active(telegram_id)
         strategy_status_text = ""
@@ -227,8 +207,7 @@ class TradeBotUtils:
         if is_active:
             strategy_status = strategy_manager.get_strategy_status(telegram_id)
             strategy_status_text = (
-                f"\n🟢 <b>Активная стратегия:</b> {strategy_status.get('strategy_name', 'MACD Full')}\n"
-                f"📊 <b>Состояние:</b> {strategy_status.get('position_state', 'Unknown')}"
+                f"\n🟢 <b>Активная стратегия:</b> {strategy_status.get('strategy_name', 'MACD Full')}"
             )
 
         # Форматируем P&L с помощью helpers
@@ -245,47 +224,10 @@ class TradeBotUtils:
             f"🔢 <b>Всего сделок:</b> {total_trades}\n"
             f"✅ <b>Закрытых сделок:</b> {closed_trades}\n"
             f"📈 <b>Прибыльных:</b> {profitable_trades} ({win_rate_formatted})\n"
-            f"📉 <b>Убыточных:</b> {losing_trades}\n\n"
-            f"📊 <b>Текущая позиция:</b> {current_position}"
+            f"📉 <b>Убыточных:</b> {losing_trades}"
             f"{strategy_status_text}\n\n"
             f"🔄 <i>Обновлено: {update_time_msk} МСК</i>"
         )
-
-    @staticmethod
-    def _get_current_position(telegram_id: int, trading_pair: str = None) -> str:
-        """Получение текущей позиции пользователя"""
-        from ...strategy import strategy_manager
-
-        try:
-            # Проверяем есть ли активная стратегия
-            if strategy_manager.is_strategy_active(telegram_id):
-                strategy_status = strategy_manager.get_strategy_status(telegram_id)
-                position_state = strategy_status.get('position_state', 'Unknown')
-                symbol = strategy_status.get('symbol', 'Unknown')
-
-                if position_state == 'no_position':
-                    return "нет"
-                elif position_state == 'long_position':
-                    return f"LONG {symbol}"
-                elif position_state == 'short_position':
-                    return f"SHORT {symbol}"
-                else:
-                    return f"{position_state} {symbol}"
-
-            # Проверяем есть ли настройки API
-            user_settings = db.get_user_settings(telegram_id)
-            if not user_settings or not user_settings.get('bybit_api_key') or not user_settings.get('bybit_secret_key'):
-                return "API ключи не настроены"
-
-            if not trading_pair:
-                return "торговая пара не установлена"
-
-            # Если нет активной стратегии, но есть API - можем проверить позицию
-            return "нет активной стратегии"
-
-        except Exception as e:
-            logger.error(f"❌ Ошибка получения позиции для {telegram_id}: {e}")
-            return "ошибка получения данных"
 
     @staticmethod
     async def get_balance_text(telegram_id: int) -> str:
@@ -338,8 +280,7 @@ class TradeBotUtils:
 
                     strategy_text = (
                         f"\n🤖 <b>Активная стратегия:</b> {strategy_status.get('strategy_name', 'MACD Full')}\n"
-                        f"📊 <b>Размер позиции:</b> {position_size}\n"
-                        f"🎯 <b>Состояние:</b> {strategy_status.get('position_state', 'Unknown')}"
+                        f"📊 <b>Размер позиции:</b> {position_size}"
                     )
 
                 # Время обновления в МСК
@@ -403,7 +344,6 @@ class TradeBotUtils:
         return {
             'is_active': True,
             'strategy_name': strategy_status.get('strategy_name'),
-            'position_state': strategy_status.get('position_state'),
             'symbol': strategy_status.get('symbol'),
             'position_size': strategy_status.get('position_size'),
             'start_time': strategy_status.get('start_time'),

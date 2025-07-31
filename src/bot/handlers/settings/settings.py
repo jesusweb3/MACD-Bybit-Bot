@@ -26,7 +26,7 @@ def get_progress_bar(filled: int, total: int) -> str:
 def count_filled_settings(user_settings: dict, telegram_id: int) -> tuple[int, int]:
     """Подсчет заполненных настроек"""
     if not user_settings:
-        return 0, 6
+        return 0, 5
 
     filled_settings = []
 
@@ -51,12 +51,8 @@ def count_filled_settings(user_settings: dict, telegram_id: int) -> tuple[int, i
     if user_settings.get('timeframe'):
         filled_settings.append('timeframe')
 
-    # Время работы
-    if user_settings.get('bot_duration_hours'):
-        filled_settings.append('duration')
-
     filled_count = len(filled_settings)
-    total_count = 6
+    total_count = 5
 
     return filled_count, total_count
 
@@ -71,8 +67,6 @@ def format_setting_display(value, setting_name: str = "") -> str:
 
     if setting_name in ["leverage"]:
         return f"{value}x"
-    elif setting_name in ["bot_duration_hours"]:
-        return f"{value}ч"
     else:
         return str(value)
 
@@ -159,8 +153,7 @@ async def show_settings_menu(callback: CallbackQuery):
             f"💰 Пара: {format_setting_display(user_settings.get('trading_pair'))}\n"
             f"⚡ Плечо: {format_setting_display(user_settings.get('leverage'), 'leverage')}\n"
             f"📊 Размер позиции: {position_size_display}\n"
-            f"⏱️ Таймфрейм: {format_setting_display(user_settings.get('timeframe'))}\n"
-            f"🕒 Работа: {format_setting_display(user_settings.get('bot_duration_hours'), 'bot_duration_hours')}"
+            f"⏱️ Таймфрейм: {format_setting_display(user_settings.get('timeframe'))}"
         )
 
     await callback.message.edit_text(settings_text, reply_markup=get_settings_menu())
@@ -186,8 +179,7 @@ async def show_settings_menu_after_update(message: Message, message_id: int):
         f"💰 Пара: {format_setting_display(user_settings.get('trading_pair'))}\n"
         f"⚡ Плечо: {format_setting_display(user_settings.get('leverage'), 'leverage')}\n"
         f"📊 Размер позиции: {position_size_display}\n"
-        f"⏱️ Таймфрейм: {format_setting_display(user_settings.get('timeframe'))}\n"
-        f"🕒 Работа: {format_setting_display(user_settings.get('bot_duration_hours'), 'bot_duration_hours')}"
+        f"⏱️ Таймфрейм: {format_setting_display(user_settings.get('timeframe'))}"
     )
 
     await message.bot.edit_message_text(
@@ -467,46 +459,3 @@ async def process_timeframe(callback: CallbackQuery):
 
     # Возвращаемся в главное меню настроек
     await show_settings_menu(callback)
-
-
-@router.callback_query(F.data == "settings_duration")
-async def set_bot_duration(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text(
-        "🕒 Введите время работы бота в часах:\n\n"
-        "Например: 168 (неделя), 24 (сутки)",
-        reply_markup=get_back_to_settings()
-    )
-    await state.set_state(SettingsStates.waiting_for_bot_duration)
-    await state.update_data(message_id=callback.message.message_id)
-    await callback.answer()
-
-
-@router.message(SettingsStates.waiting_for_bot_duration)
-async def process_bot_duration(message: Message, state: FSMContext):
-    data = await state.get_data()
-    message_id = data.get('message_id')
-    await message.delete()
-
-    try:
-        duration = int(message.text.strip())
-        if duration <= 0:
-            await message.bot.edit_message_text(
-                "❌ Время работы должно быть больше 0. Попробуйте еще раз:",
-                chat_id=message.chat.id,
-                message_id=message_id,
-                reply_markup=get_back_to_settings()
-            )
-            return
-    except ValueError:
-        await message.bot.edit_message_text(
-            "❌ Введите корректное число часов. Попробуйте еще раз:",
-            chat_id=message.chat.id,
-            message_id=message_id,
-            reply_markup=get_back_to_settings()
-        )
-        return
-
-    db.update_user_settings(message.from_user.id, bot_duration_hours=duration)
-    await state.clear()
-    logger.info(f"⚙️ Пользователь {message.from_user.id} установил время работы: {duration} часов")
-    await show_settings_menu_after_update(message, message_id)

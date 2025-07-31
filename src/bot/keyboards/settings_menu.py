@@ -13,8 +13,7 @@ def get_settings_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📊 Размер позиции", callback_data="settings_position_size")
         ],
         [
-            InlineKeyboardButton(text="⏱️ Таймфрейм", callback_data="settings_timeframe"),
-            InlineKeyboardButton(text="🕒 Время работы", callback_data="settings_duration")
+            InlineKeyboardButton(text="⏱️ Таймфрейм", callback_data="settings_timeframe")
         ],
         [
             InlineKeyboardButton(text="🔙 Главное меню", callback_data="start_menu")

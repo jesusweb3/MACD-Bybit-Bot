@@ -11,7 +11,6 @@ class SettingsStates(StatesGroup):
     waiting_for_trading_pair = State()
     waiting_for_leverage = State()
     waiting_for_position_size = State()
-    waiting_for_bot_duration = State()
 
 class TradingStates(StatesGroup):
     long_mode = State()
