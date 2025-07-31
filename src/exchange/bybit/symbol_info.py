@@ -59,10 +59,8 @@ class BybitSymbolInfo(BybitBase):
                 'settle_coin': instrument.get('settleCoin')
             }
 
-            logger.info(f"✅ Информация о {symbol} получена:")
-            logger.info(f"   Минимальное количество: {symbol_info['min_order_qty']}")
-            logger.info(f"   Шаг количества: {symbol_info['qty_step']}")
-            logger.info(f"   Размер тика цены: {symbol_info['tick_size']}")
+            # ИСПРАВЛЕНО: Объединенный лог вместо нескольких
+            logger.info(f"✅ Информация о {symbol} получена: Минимальное количество: {symbol_info['min_order_qty']}, Шаг количества: {symbol_info['qty_step']}, Размер тика цены: {symbol_info['tick_size']}")
 
             return symbol_info
 

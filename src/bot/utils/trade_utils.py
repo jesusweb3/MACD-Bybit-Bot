@@ -173,32 +173,14 @@ class TradeBotUtils:
 
     @staticmethod
     def get_statistics_text(telegram_id: int) -> str:
-        """Текст статистики торговли с реальными данными"""
+        """УЛУЧШЕНО: Текст статистики торговли с использованием нового метода БД"""
         from ...strategy import strategy_manager
 
-        # Получаем историю сделок из БД
-        trades = db.get_user_trades_history(telegram_id, limit=100)
-
-        # Рассчитываем статистику
-        total_trades = len(trades)
-        total_pnl = 0.0
-        profitable_trades = 0
-        losing_trades = 0
-
-        for trade in trades:
-            if trade['status'] == 'closed' and trade['pnl'] is not None:
-                total_pnl += trade['pnl']
-                if trade['pnl'] > 0:
-                    profitable_trades += 1
-                elif trade['pnl'] < 0:
-                    losing_trades += 1
-
-        closed_trades = profitable_trades + losing_trades
-        win_rate = (profitable_trades / closed_trades * 100) if closed_trades > 0 else 0
+        # ИСПРАВЛЕНО: Используем новый метод get_user_statistics()
+        stats = db.get_user_statistics(telegram_id)
 
         # Получаем настройки пользователя для торговой пары
         user_settings = db.get_user_settings(telegram_id)
-        trading_pair = user_settings.get('trading_pair') if user_settings else None
 
         # Статус стратегии
         is_active = strategy_manager.is_strategy_active(telegram_id)
@@ -212,8 +194,8 @@ class TradeBotUtils:
 
         # Форматируем P&L с помощью helpers
         from ...utils.helpers import format_pnl, format_percentage
-        pnl_formatted = format_pnl(total_pnl, with_currency=False)
-        win_rate_formatted = format_percentage(win_rate, 1)
+        pnl_formatted = format_pnl(stats['total_pnl'], with_currency=False)
+        win_rate_formatted = format_percentage(stats['win_rate'], 1)
 
         # Время обновления в МСК
         update_time_msk = format_msk_time()
@@ -221,10 +203,10 @@ class TradeBotUtils:
         return (
             f"📊 <b>Статистика торговли</b>\n\n"
             f"{pnl_formatted} USDT\n"
-            f"🔢 <b>Всего сделок:</b> {total_trades}\n"
-            f"✅ <b>Закрытых сделок:</b> {closed_trades}\n"
-            f"📈 <b>Прибыльных:</b> {profitable_trades} ({win_rate_formatted})\n"
-            f"📉 <b>Убыточных:</b> {losing_trades}"
+            f"🔢 <b>Всего сделок:</b> {stats['total_trades']}\n"
+            f"✅ <b>Закрытых сделок:</b> {stats['closed_trades']}\n"
+            f"📈 <b>Прибыльных:</b> {stats['profitable_trades']} ({win_rate_formatted})\n"
+            f"📉 <b>Убыточных:</b> {stats['losing_trades']}"
             f"{strategy_status_text}\n\n"
             f"🔄 <i>Обновлено: {update_time_msk} МСК</i>"
         )
@@ -349,3 +331,88 @@ class TradeBotUtils:
             'start_time': strategy_status.get('start_time'),
             'strategy_id': strategy_status.get('strategy_id')
         }
+
+    @staticmethod
+    def get_quick_stats_summary(telegram_id: int) -> str:
+        """НОВЫЙ МЕТОД: Краткая сводка статистики для быстрого просмотра"""
+        stats = db.get_user_statistics(telegram_id)
+
+        from ...utils.helpers import format_pnl
+        pnl_formatted = format_pnl(stats['total_pnl'], with_currency=False)
+
+        if stats['total_trades'] == 0:
+            return "📊 Пока нет сделок"
+
+        return f"📊 {stats['total_trades']} сделок, {pnl_formatted} USDT"
+
+    @staticmethod
+    def validate_trading_settings(telegram_id: int) -> Dict[str, Any]:
+        """НОВЫЙ МЕТОД: Расширенная валидация торговых настроек"""
+        settings_check = TradeBotUtils.check_settings_completeness(telegram_id)
+
+        if not settings_check['complete']:
+            return {
+                'valid': False,
+                'errors': settings_check['missing_settings'],
+                'message': f"Не хватает настроек: {', '.join(settings_check['missing_settings'])}"
+            }
+
+        # Дополнительные проверки
+        user_settings = db.get_user_settings(telegram_id)
+        errors = []
+
+        # Проверяем корректность плеча
+        leverage = user_settings.get('leverage')
+        if leverage and (leverage < 3 or leverage > 10):
+            errors.append('Плечо должно быть от 3x до 10x')
+
+        # Проверяем торговую пару
+        trading_pair = user_settings.get('trading_pair', '')
+        if not trading_pair.endswith('USDT'):
+            errors.append('Торговая пара должна заканчиваться на USDT')
+
+        if errors:
+            return {
+                'valid': False,
+                'errors': errors,
+                'message': f"Ошибки в настройках: {', '.join(errors)}"
+            }
+
+        return {'valid': True, 'message': 'Все настройки корректны'}
+
+    @staticmethod
+    def get_position_size_calculation_preview(telegram_id: int, current_price: float = None) -> str:
+        """НОВЫЙ МЕТОД: Предварительный расчет размера позиции для показа пользователю"""
+        position_info = db.get_position_size_info(telegram_id)
+        user_settings = db.get_user_settings(telegram_id)
+
+        if not position_info.get('value') or not user_settings:
+            return "❌ Настройки размера позиции не найдены"
+
+        try:
+            # Примерная цена если не передана
+            if not current_price:
+                current_price = 3000.0  # Примерная цена для расчета
+
+            # Базовая логика расчета (упрощенная)
+            if position_info['type'] == 'fixed_usdt':
+                usdt_amount = position_info['value']
+            else:  # percentage
+                # Для примера используем 1000 USDT как базовый баланс
+                estimated_balance = 1000.0
+                usdt_amount = estimated_balance * (position_info['value'] / 100)
+
+            leverage = user_settings.get('leverage', 1)
+            total_volume = usdt_amount * leverage
+            estimated_quantity = total_volume / current_price
+
+            return (
+                f"📊 <b>Предварительный расчет:</b>\n"
+                f"💰 Базовая сумма: {usdt_amount:.2f} USDT\n"
+                f"⚡ С плечом {leverage}x: {total_volume:.2f} USDT\n"
+                f"📈 Количество: ~{estimated_quantity:.4f}\n"
+                f"<i>* Точный расчет при торговле</i>"
+            )
+
+        except Exception as e:
+            return f"❌ Ошибка расчета: {str(e)}"

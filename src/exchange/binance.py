@@ -10,19 +10,11 @@ from ..utils.logger import logger
 
 
 class BinanceClient:
-    """
-    Binance Futures API и WebSocket клиент для real-time режима
-
-    Изменения:
-    - Оптимизация для работы с минутными данными
-    - Улучшенная обработка WebSocket соединений
-    - Поддержка real-time режима для MACD стратегий
-    """
 
     def __init__(self):
         self.base_url = "https://fapi.binance.com"
         self.ws_url = "wss://fstream.binance.com/ws"
-        self.timeout = aiohttp.ClientTimeout(total=15)  # Увеличили timeout для стабильности
+        self.timeout = aiohttp.ClientTimeout(total=15)
         self.session: Optional[aiohttp.ClientSession] = None
         self.ws_connection: Optional[Any] = None
         self.ws_callbacks: Dict[str, Callable] = {}
@@ -58,10 +50,6 @@ class BinanceClient:
             raise
 
     def _convert_timeframe(self, timeframe: str) -> str:
-        """
-        Конвертация таймфрейма в формат Binance
-        Теперь поддерживаем 1m для real-time режима
-        """
         # Маппинг поддерживаемых таймфреймов
         timeframe_map = {
             '1m': '1m',  # Основной для real-time
@@ -78,12 +66,11 @@ class BinanceClient:
         return converted
 
     async def get_klines(self, symbol: str, interval: str, limit: int = 500) -> List[Dict[str, Any]]:
-        """
-        Получение исторических свечей через REST API
-        Оптимизировано для real-time режима с поддержкой 1m
-        """
+
         try:
             binance_interval = self._convert_timeframe(interval)
+
+            # ИСПРАВЛЕНО: Объединенный лог запроса
             logger.info(f"Запрашиваем {limit} свечей {symbol} {binance_interval} для real-time режима")
 
             params = {
@@ -109,6 +96,7 @@ class BinanceClient:
                 }
                 klines.append(kline)
 
+            # ИСПРАВЛЕНО: Объединенный лог результата
             logger.info(f"✅ Получено {len(klines)} свечей для {symbol} (real-time режим)")
             return klines
 
@@ -117,10 +105,7 @@ class BinanceClient:
             return []
 
     async def start_kline_stream(self, symbol: str, interval: str, callback: Callable[[Dict[str, Any]], None]):
-        """
-        Запуск WebSocket потока для получения real-time свечей
-        Оптимизирован для минутных данных
-        """
+
         try:
             binance_interval = self._convert_timeframe(interval)
             stream_name = f"{symbol.lower()}@kline_{binance_interval}"
@@ -213,9 +198,8 @@ class BinanceClient:
                     if 'k' in data:
                         await self._process_kline_message(data)
 
-                    # Логируем статистику каждые 100 сообщений
-                    if self.messages_received % 100 == 0:
-                        logger.debug(f"📊 Real-time статистика: {self.messages_received} сообщений получено")
+                    # ИСПРАВЛЕНО: Убрали избыточное логирование каждых 100 сообщений
+                    # Статистика будет видна только при закрытии
 
                 except asyncio.TimeoutError:
                     # Отправляем ping для проверки соединения
@@ -271,7 +255,7 @@ class BinanceClient:
             logger.error(f"❌ Ошибка переподключения WebSocket: {e}")
 
     async def _process_kline_message(self, data: Dict[str, Any]):
-        """Обработка сообщения с данными свечи (оптимизировано для real-time)"""
+        """ИСПРАВЛЕНО: Обработка сообщения с данными свечи без избыточного логирования"""
         try:
             kline_data = data['k']
 
@@ -296,9 +280,7 @@ class BinanceClient:
                 'is_closed': kline_data['x']
             }
 
-            # Логируем получение минутных свечей в debug режиме
-            if interval == '1m':
-                logger.debug(f"📊 Real-time 1m свеча: {symbol} цена={kline['close']}")
+            # ИСПРАВЛЕНО: Убрали debug логирование минутных свечей
 
             if stream_name in self.ws_callbacks:
                 callback = self.ws_callbacks[stream_name]
@@ -396,7 +378,7 @@ class BinanceClient:
 
             self.ws_callbacks.clear()
 
-            # Логируем финальную статистику
+            # ИСПРАВЛЕНО: Логируем финальную статистику только при закрытии
             stats = self.get_statistics()
             logger.info(
                 f"📊 Finalized stats: {stats['messages_received']} messages, {stats['connection_restarts']} reconnects")

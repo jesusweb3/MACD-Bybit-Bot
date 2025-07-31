@@ -16,7 +16,7 @@ class Database:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
 
-            # ТАБЛИЦА ПОЛЬЗОВАТЕЛЕЙ без bot_duration_hours поля
+            # ТАБЛИЦА ПОЛЬЗОВАТЕЛЕЙ - чистая структура без лишних полей
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -187,9 +187,9 @@ class Database:
             'secret_key': user.get('bybit_secret_key')
         }
 
-    # УПРОЩЕННЫЕ МЕТОДЫ ДЛЯ СТРАТЕГИЙ
+    # МЕТОДЫ ДЛЯ СТРАТЕГИЙ
     def create_active_strategy(self, user_id: int, strategy_name: str) -> int:
-        """Создание записи активной стратегии - теперь встроено в пользователя"""
+        """Создание записи активной стратегии"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
 
@@ -230,7 +230,7 @@ class Database:
                 # Очищаем активную стратегию
                 updates.append('active_strategy_name = NULL')
 
-            # Можно добавить обработку error_message в будущем если понадобится
+            # Логируем ошибку если есть
             if error_message:
                 logger.warning(f"⚠️ Ошибка стратегии для пользователя {strategy_id}: {error_message}")
 
@@ -261,7 +261,7 @@ class Database:
             strategy = cursor.fetchone()
             return dict(strategy) if strategy else None
 
-    # УПРОЩЕННЫЕ МЕТОДЫ ДЛЯ СДЕЛОК
+    # МЕТОДЫ ДЛЯ СДЕЛОК
     def create_trade_record(self, user_id: int, strategy_id: int, symbol: str,
                             side: str, quantity: str, order_id: Optional[str] = None) -> int:
         """Создание записи сделки"""
@@ -334,11 +334,97 @@ class Database:
             trades = cursor.fetchall()
             return [dict(trade) for trade in trades]
 
+    def get_user_statistics(self, telegram_id: int) -> Dict[str, Any]:
+        """НОВЫЙ МЕТОД: Получение статистики торговли пользователя"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            # Получаем все сделки пользователя
+            cursor.execute("""
+                SELECT * FROM trades 
+                WHERE telegram_id = ?
+                ORDER BY opened_at DESC
+            """, (telegram_id,))
+
+            trades = cursor.fetchall()
+
+            # Считаем статистику
+            total_trades = len(trades)
+            closed_trades = len([t for t in trades if t['status'] == 'closed'])
+            profitable_trades = len([t for t in trades if t['status'] == 'closed' and t['pnl'] and t['pnl'] > 0])
+            losing_trades = len([t for t in trades if t['status'] == 'closed' and t['pnl'] and t['pnl'] < 0])
+
+            total_pnl = sum([t['pnl'] for t in trades if t['pnl'] is not None])
+            win_rate = (profitable_trades / closed_trades * 100) if closed_trades > 0 else 0
+
+            return {
+                'total_trades': total_trades,
+                'closed_trades': closed_trades,
+                'profitable_trades': profitable_trades,
+                'losing_trades': losing_trades,
+                'total_pnl': total_pnl,
+                'win_rate': win_rate
+            }
+
     @staticmethod
     def get_user_strategies_history(telegram_id: int, limit: int = 10) -> List[Dict[str, Any]]:
-        """Получение истории стратегий пользователя - упрощенная версия"""
-        _ = telegram_id, limit
+        """История стратегий - заглушка (не используется в текущей версии)"""
         return []
+
+    def cleanup_old_data(self, days_to_keep: int = 30):
+        """НОВЫЙ МЕТОД: Очистка старых данных"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+
+                # Удаляем старые закрытые сделки
+                cursor.execute("""
+                    DELETE FROM trades 
+                    WHERE status = 'closed' 
+                    AND closed_at < datetime('now', '-{} days')
+                """.format(days_to_keep))
+
+                deleted_trades = cursor.rowcount
+                conn.commit()
+
+                if deleted_trades > 0:
+                    logger.info(f"🧹 Удалено {deleted_trades} старых сделок (старше {days_to_keep} дней)")
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка очистки старых данных: {e}")
+
+    def get_database_stats(self) -> Dict[str, Any]:
+        """НОВЫЙ МЕТОД: Статистика базы данных"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+
+                # Считаем пользователей
+                cursor.execute("SELECT COUNT(*) FROM users")
+                total_users = cursor.fetchone()[0]
+
+                # Считаем активные стратегии
+                cursor.execute("SELECT COUNT(*) FROM users WHERE strategy_status = 'running'")
+                active_strategies = cursor.fetchone()[0]
+
+                # Считаем сделки
+                cursor.execute("SELECT COUNT(*) FROM trades")
+                total_trades = cursor.fetchone()[0]
+
+                cursor.execute("SELECT COUNT(*) FROM trades WHERE status = 'open'")
+                open_trades = cursor.fetchone()[0]
+
+                return {
+                    'total_users': total_users,
+                    'active_strategies': active_strategies,
+                    'total_trades': total_trades,
+                    'open_trades': open_trades
+                }
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения статистики БД: {e}")
+            return {}
 
 
 db = Database()

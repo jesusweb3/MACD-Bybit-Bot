@@ -9,10 +9,10 @@ from ..utils.logger import logger
 
 class MACDIndicator:
     """
-    MACD индикатор с real-time пересчетом на основе минутных данных
+    MACD индикатор с агрессивной real-time логикой
 
     Поддерживаемые таймфреймы: 5m, 45m
-    Обновления: каждую минуту с пересчетом MACD для выбранного таймфрейма
+    Обновления: каждую минуту с пересчетом MACD и проверкой сигналов
     """
 
     def __init__(self, symbol: str, timeframe: str,
@@ -306,8 +306,8 @@ class MACDIndicator:
             logger.warning(
                 f"⚠️ Получено {len(self.target_klines)} {self.timeframe} свечей, меньше требуемых {self.min_history}")
 
-        # Инициализируем текущую свечу с учетом пропущенных минут
-        await self._initialize_current_candle_with_missing_minutes()
+        # Правильная инициализация текущей свечи
+        await self._initialize_current_candle_correctly()
 
         # Конвертируем в DataFrame и рассчитываем MACD
         self.df = self.klines_to_dataframe(self.target_klines)
@@ -315,39 +315,39 @@ class MACDIndicator:
 
         logger.info(f"✅ История загружена: {len(self.df)} свечей {self.timeframe}")
 
-    async def _initialize_current_candle_with_missing_minutes(self):
-        """Инициализация текущей свечи с учетом пропущенных минут"""
+    async def _initialize_current_candle_correctly(self):
+        """Правильная инициализация текущей свечи с точным количеством запросов"""
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-        self.current_target_start_time = self._get_target_candle_start_time(now_ms)
 
+        # Получаем время последней ЗАКРЫТОЙ минутной свечи
         current_time = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
+        # Последняя закрытая свеча была минуту назад
+        last_closed_minute = current_time.replace(second=0, microsecond=0) - timedelta(minutes=1)
+        last_closed_ms = int(last_closed_minute.timestamp() * 1000)
+
+        # К какому целевому интервалу относится последняя закрытая свеча
+        self.current_target_start_time = self._get_target_candle_start_time(last_closed_ms)
+
+        # Рассчитываем сколько минут прошло в текущем интервале
         candle_start_time = datetime.fromtimestamp(self.current_target_start_time / 1000, tz=timezone.utc)
+        elapsed_seconds = (last_closed_minute - candle_start_time).total_seconds()
+        elapsed_minutes = int(elapsed_seconds / 60) + 1  # +1 потому что включаем последнюю закрытую
 
-        # Проверяем, нужно ли собрать пропущенные минуты
-        minutes_elapsed = (current_time - candle_start_time).total_seconds() / 60
+        interval_minutes = self._get_timeframe_minutes()
 
-        if minutes_elapsed > 0 and minutes_elapsed < self._get_timeframe_minutes():
-            logger.info(f"🔄 Собираем {minutes_elapsed:.0f} пропущенных минут в текущем {self.timeframe} интервале")
-            await self._collect_missing_minutes_for_current_candle(candle_start_time, current_time)
+        if 0 < elapsed_minutes < interval_minutes:
+            # Запрашиваем ТОЧНО нужное количество
+            logger.info(f"🔄 Собираем {elapsed_minutes} пропущенных минут в текущем {self.timeframe} интервале")
+            await self._collect_missing_minutes_for_current_candle(elapsed_minutes)
         else:
             self.current_target_candle = None
 
-    async def _collect_missing_minutes_for_current_candle(self, candle_start_time: datetime, current_time: datetime):
-        """Сбор пропущенных минут для текущей формируемой свечи"""
+    async def _collect_missing_minutes_for_current_candle(self, elapsed_minutes: int):
+        """Запрашиваем ТОЧНО нужное количество свечей"""
         try:
-            # Определяем сколько минут нужно собрать
-            minutes_to_collect = int((current_time - candle_start_time).total_seconds() / 60)
-
-            if minutes_to_collect <= 0:
-                self.current_target_candle = None
-                return
-
-            # Для 45m может быть много минут, ограничиваем запрос
-            max_request = min(minutes_to_collect + 10, 60)  # Максимум 60 минут
-
-            # Запрашиваем минутные свечи
+            # Запрашиваем ровно столько, сколько нужно
             recent_1m_klines = await self.binance_client.get_klines(
-                self.symbol, '1m', max_request
+                self.symbol, '1m', elapsed_minutes
             )
 
             if not recent_1m_klines:
@@ -388,51 +388,115 @@ class MACDIndicator:
             logger.error(f"❌ Ошибка в kline_callback: {e}")
 
     async def _process_1m_kline(self, kline_1m: Dict[str, Any]):
-        """Обработка новой минутной свечи с правильной логикой завершения свечей"""
+        """Правильный порядок - сначала MACD, потом завершение интервала"""
         from ..utils.helpers import format_utc_to_msk
 
         self.total_candles_processed += 1
-
         kline_time_msk = format_utc_to_msk(kline_1m['timestamp'])
 
-        # Определяем к какой целевой свече относится эта минутная
+        # Определяем к какой целевой свече относится эта закрытая минутная свеча
         target_start_time = self._get_target_candle_start_time(kline_1m['timestamp'])
 
-        # Если это новый целевой интервал
+        # Если это новый целевой интервал - начинаем его
         if self.current_target_start_time != target_start_time:
-            # Завершаем предыдущую свечу если она была
-            if self.current_target_candle is not None:
-                await self._complete_target_candle()
-
-            # Начинаем новую целевую свечу
             self._start_new_target_candle(target_start_time, kline_1m)
         else:
             # Обновляем текущую целевую свечу
             self._update_current_target_candle(kline_1m)
 
-            # Проверяем, является ли эта минута ПОСЛЕДНЕЙ в целевом интервале
-            await self._check_if_target_candle_should_close(kline_1m)
+        # СНАЧАЛА показываем значения MACD
+        await self._recalculate_macd_and_check_signals_every_minute(kline_time_msk)
 
-        # НОВОЕ: Пересчитываем MACD и логируем значения после каждой минуты
-        await self._recalculate_macd_and_log_values(kline_time_msk)
+        # ПОТОМ проверяем нужно ли завершить интервал
+        if self._is_last_minute_of_interval(kline_1m['timestamp']):
+            await self._complete_target_candle_with_signal()
+            # Сбрасываем текущую свечу после завершения
+            self.current_target_candle = None
+            self.current_target_start_time = None
 
-    async def _check_if_target_candle_should_close(self, kline_1m: Dict[str, Any]):
-        """Проверяем, должна ли завершиться целевая свеча после этой минутной"""
+    def _is_last_minute_of_interval(self, timestamp_ms: int) -> bool:
+        """Проверка является ли минутная свеча последней в целевом интервале"""
+        dt = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
+
+        if self.timeframe == "5m":
+            # Для 5m последние минуты: 04, 09, 14, 19, 24, 29, 34, 39, 44, 49, 54, 59
+            return dt.minute % 5 == 4
+
+        elif self.timeframe == "45m":
+            # Для 45m нужно проверить по сетке
+            target_start = self._get_45m_grid_start_time(timestamp_ms)
+            target_end = target_start + (45 * 60 * 1000)  # +45 минут
+            next_minute = timestamp_ms + (60 * 1000)  # следующая минута
+
+            # Если следующая минута выходит за границы интервала - значит текущая последняя
+            return next_minute >= target_end
+
+        return False
+
+    async def _complete_target_candle_with_signal(self):
+        """Завершение свечи + сразу показываем начало нового интервала"""
         if self.current_target_candle is None:
             return
 
-        # Определяем время следующей минутной свечи
-        next_minute_time = kline_1m['timestamp'] + (60 * 1000)  # +1 минута
-        next_target_start = self._get_target_candle_start_time(next_minute_time)
-
-        # Если следующая минута будет в новом целевом интервале - завершаем текущую свечу
-        if next_target_start != self.current_target_start_time:
-            await self._complete_target_candle_immediately()
-
-    def _start_new_target_candle(self, target_start_time: int, first_kline_1m: Dict[str, Any]):
-        """Начало новой целевой свечи"""
         from ..utils.helpers import format_utc_to_msk
 
+        # Логируем завершение текущего интервала
+        start_time_msk = format_utc_to_msk(self.current_target_candle['timestamp'], "%H:%M")
+        end_time_ms = self.current_target_candle['timestamp'] + (self._get_timeframe_minutes() * 60 * 1000)
+        end_time_msk = format_utc_to_msk(end_time_ms, "%H:%M")
+
+        logger.info(
+            f"✅ Завершен {self.timeframe} интервал: {start_time_msk}-{end_time_msk} МСК, цена: {self.current_target_candle['close']}")
+
+        # НОВОЕ: Сразу логируем начало следующего интервала
+        next_start_time_ms = end_time_ms
+        next_end_time_ms = next_start_time_ms + (self._get_timeframe_minutes() * 60 * 1000)
+        next_start_msk = format_utc_to_msk(next_start_time_ms, "%H:%M")
+        next_end_msk = format_utc_to_msk(next_end_time_ms, "%H:%M")
+
+        logger.info(f"🆕 Начат новый {self.timeframe} интервал: {next_start_msk}-{next_end_msk} МСК")
+
+        # Добавляем в историю
+        self.target_klines.append(self.current_target_candle.copy())
+
+        # Ограничиваем размер истории
+        if len(self.target_klines) > self.min_history * 2:
+            self.target_klines = self.target_klines[-self.min_history:]
+
+        # Проверяем сигналы на завершенной свече
+        await self._check_signals_on_completed_candle()
+
+    async def _check_signals_on_completed_candle(self):
+        """Проверка сигналов на завершенной свече"""
+        # Создаем DataFrame только из завершенных свечей
+        temp_df = self.klines_to_dataframe(self.target_klines)
+        temp_df = self.calculate_macd(temp_df)
+
+        if len(temp_df) < self.slow_period:
+            return
+
+        # Проверяем сигналы
+        signal = self.detect_macd_signals(temp_df)
+
+        if signal:
+            # НАЙДЕНО ПЕРЕСЕЧЕНИЕ
+            logger.info(f"🎯 ПЕРЕСЕЧЕНИЕ MACD! {signal['crossover_type'].upper()} сигнал {signal['type'].upper()}")
+            logger.info(
+                f"   📊 Цена: {signal['price']:.2f} | MACD: {signal['macd_line']:.6f} | Signal: {signal['signal_line']:.6f} | Hist: {signal['histogram']:.6f}")
+            logger.info(f"   ⏰ Время: {self._format_utc_to_msk(signal['timestamp'])} МСК | TF: {self.timeframe}")
+
+            # Вызываем callback'и
+            for callback in self.callbacks:
+                try:
+                    if asyncio.iscoroutinefunction(callback):
+                        await callback(signal)
+                    else:
+                        callback(signal)
+                except Exception as e:
+                    logger.error(f"❌ Ошибка в callback: {e}")
+
+    def _start_new_target_candle(self, target_start_time: int, first_kline_1m: Dict[str, Any]):
+        """Начинаем новую свечу БЕЗ лога (лог уже был при завершении предыдущей)"""
         self.current_target_start_time = target_start_time
         self.current_target_candle = {
             'timestamp': target_start_time,
@@ -446,11 +510,7 @@ class MACDIndicator:
             'trades_count': first_kline_1m.get('trades_count', 0)
         }
 
-        start_time_msk = format_utc_to_msk(target_start_time, "%H:%M")
-        end_time_ms = target_start_time + (self._get_timeframe_minutes() * 60 * 1000)
-        end_time_msk = format_utc_to_msk(end_time_ms, "%H:%M")
-
-        logger.info(f"🆕 Начат новый {self.timeframe} интервал: {start_time_msk}-{end_time_msk} МСК")
+        # УБРАЛИ ЛОГ - он уже был показан при завершении предыдущего интервала
 
     def _update_current_target_candle(self, kline_1m: Dict[str, Any]):
         """Обновление текущей целевой свечи новой минутной свечей"""
@@ -466,48 +526,8 @@ class MACDIndicator:
         self.current_target_candle['quote_volume'] += kline_1m.get('quote_volume', 0)
         self.current_target_candle['trades_count'] += kline_1m.get('trades_count', 0)
 
-    async def _complete_target_candle_immediately(self):
-        """Немедленное завершение целевой свечи"""
-        from ..utils.helpers import format_utc_to_msk
-
-        if self.current_target_candle is None:
-            return
-
-        # Логируем завершение
-        start_time_msk = format_utc_to_msk(self.current_target_candle['timestamp'], "%H:%M")
-        end_time_ms = self.current_target_candle['timestamp'] + (self._get_timeframe_minutes() * 60 * 1000)
-        end_time_msk = format_utc_to_msk(end_time_ms, "%H:%M")
-
-        logger.info(
-            f"✅ Завершен {self.timeframe} интервал: {start_time_msk}-{end_time_msk} МСК, цена: {self.current_target_candle['close']}")
-
-        # Добавляем в историю
-        self.target_klines.append(self.current_target_candle.copy())
-
-        # Ограничиваем размер истории
-        if len(self.target_klines) > self.min_history * 2:
-            self.target_klines = self.target_klines[-self.min_history:]
-
-    async def _complete_target_candle(self):
-        """Завершение целевой свечи при переходе к новому интервалу"""
-        if self.current_target_candle is None:
-            return
-
-        # Проверяем, не была ли свеча уже завершена
-        if len(self.target_klines) > 0:
-            last_completed = self.target_klines[-1]
-            if last_completed['timestamp'] == self.current_target_candle['timestamp']:
-                return
-
-        # Если свеча еще не была завершена - добавляем в историю без логирования
-        self.target_klines.append(self.current_target_candle.copy())
-
-        # Ограничиваем размер истории
-        if len(self.target_klines) > self.min_history * 2:
-            self.target_klines = self.target_klines[-self.min_history:]
-
-    async def _recalculate_macd_and_log_values(self, kline_time_msk: str):
-        """НОВАЯ ФУНКЦИЯ: Пересчет MACD и логирование значений после каждой минуты"""
+    async def _recalculate_macd_and_check_signals_every_minute(self, kline_time_msk: str):
+        """Пересчет MACD и проверка сигналов КАЖДУЮ МИНУТУ"""
         if self.current_target_candle is None:
             return
 
@@ -531,7 +551,7 @@ class MACDIndicator:
         current_histogram = current['histogram']
         current_price = current['close']
 
-        # Проверяем сигналы
+        # Проверяем сигналы КАЖДУЮ МИНУТУ
         signal = self.detect_macd_signals(temp_df)
 
         if signal:
@@ -551,9 +571,14 @@ class MACDIndicator:
                 except Exception as e:
                     logger.error(f"❌ Ошибка в callback: {e}")
         else:
-            # ПЕРЕСЕЧЕНИЯ НЕТ - логируем только значения
+            # ПЕРЕСЕЧЕНИЯ НЕТ - логируем текущие значения
             logger.info(
                 f"📊 СВЕЧА ПОЛУЧЕНА - ЗНАЧЕНИЯ MACD: Цена: {current_price:.2f} | MACD: {current_macd:.6f} | Signal: {current_signal:.6f} | Hist: {current_histogram:.6f} | ПЕРЕСЕЧЕНИЯ НЕТУ")
+
+    def _format_utc_to_msk(self, timestamp: int, format_str: str = "%H:%M:%S") -> str:
+        """Вспомогательная функция для форматирования времени"""
+        from ..utils.helpers import format_utc_to_msk
+        return format_utc_to_msk(timestamp, format_str)
 
     async def start(self):
         """Запуск индикатора"""
