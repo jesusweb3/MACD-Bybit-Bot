@@ -380,7 +380,7 @@ async def process_leverage(callback: CallbackQuery):
 @router.callback_query(F.data == "settings_position_size")
 async def set_position_size(callback: CallbackQuery, state: FSMContext):
     position_size_info = db.get_position_size_info(callback.from_user.id)
-    current_display = position_size_info.get('display', 'не установлен')
+    current_display = position_size_info.get('display', '—')
 
     await callback.message.edit_text(
         f"📊 Введите новый размер позиции, пример:\n"

@@ -150,7 +150,7 @@ class Database:
             return {
                 'type': None,
                 'value': None,
-                'display': 'не установлен'
+                'display': '—'
             }
 
         size_type = user.get('position_size_type')
@@ -160,7 +160,7 @@ class Database:
             return {
                 'type': None,
                 'value': None,
-                'display': 'не установлен'
+                'display': '—'
             }
 
         if size_type == 'percentage':
@@ -168,7 +168,7 @@ class Database:
         elif size_type == 'fixed_usdt':
             display = f"{size_value}USDT"
         else:
-            display = 'не установлен'
+            display = '—'
 
         return {
             'type': size_type,

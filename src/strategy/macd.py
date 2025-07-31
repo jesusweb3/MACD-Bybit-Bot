@@ -557,6 +557,6 @@ class MACDStrategy:
             'trading_pair': self.user_settings.get('trading_pair'),
             'leverage': self.user_settings.get('leverage'),
             'timeframe': self.timeframe,
-            'position_size': position_size_info.get('display', 'не установлен'),
+            'position_size': position_size_info.get('display', '—'),
             'mode': 'Real-time динамический расчет размера'
         }
