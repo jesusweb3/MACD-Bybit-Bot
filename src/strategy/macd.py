@@ -2,7 +2,7 @@
 import asyncio
 from typing import Dict, Any, Optional, Union
 from enum import Enum
-from datetime import datetime
+from datetime import datetime, timedelta
 from ..indicators.macd_5m import MACD5mIndicator
 from ..indicators.macd_45m import MACD45mIndicator
 from ..exchange.bybit import BybitClient
@@ -278,28 +278,78 @@ class MACDStrategy:
         if self.timeframe == '5m':
             # Для 5m интервал меняется каждые 5 минут (00, 05, 10, 15, ...)
             current_interval_minute = (signal_timestamp.minute // 5) * 5
-            current_interval_start = signal_timestamp.replace(minute=current_interval_minute, second=0, microsecond=0)
+            current_interval_start = signal_timestamp.replace(
+                minute=current_interval_minute,
+                second=0,
+                microsecond=0
+            )
         elif self.timeframe == '45m':
             # Для 45m используем логику из индикатора
             if hasattr(self.macd_indicator, 'get_45m_interval_start'):
                 current_interval_start = self.macd_indicator.get_45m_interval_start(signal_timestamp)
             else:
-                # Fallback
-                interval_number = signal_timestamp.hour * 60 + signal_timestamp.minute
-                interval_start_minutes = (interval_number // 45) * 45
-                current_interval_start = signal_timestamp.replace(
-                    hour=interval_start_minutes // 60,
-                    minute=interval_start_minutes % 60,
-                    second=0,
-                    microsecond=0
-                )
+                # Fallback для 45m
+                day_start = signal_timestamp.replace(hour=0, minute=0, second=0, microsecond=0)
+                minutes_from_start = (signal_timestamp - day_start).total_seconds() / 60
+                interval_number = int(minutes_from_start // 45)
+                current_interval_start = day_start + timedelta(minutes=interval_number * 45)
         else:
             return False
 
         # Проверяем изменился ли интервал
-        if self.current_interval_start != current_interval_start:
-            logger.info(f"🔄 Новый {self.timeframe} интервал: {current_interval_start.strftime('%H:%M')} (было: {self.current_interval_start.strftime('%H:%M') if self.current_interval_start else 'None'})")
+        if self.current_interval_start is None:
+            # Первый запуск - просто сохраняем текущий интервал
             self.current_interval_start = current_interval_start
+            logger.info(
+                f"🎯 Инициализация: текущий {self.timeframe} интервал {current_interval_start.strftime('%H:%M')}")
+            return False
+        elif self.current_interval_start != current_interval_start:
+            # Интервал изменился
+            old_interval = self.current_interval_start
+            self.current_interval_start = current_interval_start
+
+            logger.info(
+                f"🔄 Новый {self.timeframe} интервал: {old_interval.strftime('%H:%M')} -> {current_interval_start.strftime('%H:%M')}")
+            return True
+
+        return False
+
+    def _check_interval_by_time(self, signal_timestamp: datetime) -> bool:
+        """Принудительная проверка интервала по времени"""
+        if self.current_interval_start is None:
+            return False
+
+        # Вычисляем когда должен закрыться текущий интервал
+        if self.timeframe == '5m':
+            interval_end = self.current_interval_start + timedelta(minutes=5)
+        elif self.timeframe == '45m':
+            interval_end = self.current_interval_start + timedelta(minutes=45)
+        else:
+            return False
+
+        # Проверяем прошло ли время закрытия интервала
+        if signal_timestamp >= interval_end:
+            logger.info(
+                f"⏰ Принудительная проверка: интервал {self.current_interval_start.strftime('%H:%M')} должен был закрыться в {interval_end.strftime('%H:%M')}")
+
+            # Обновляем текущий интервал
+            if self.timeframe == '5m':
+                new_interval_minute = (signal_timestamp.minute // 5) * 5
+                self.current_interval_start = signal_timestamp.replace(
+                    minute=new_interval_minute,
+                    second=0,
+                    microsecond=0
+                )
+            elif self.timeframe == '45m':
+                if hasattr(self.macd_indicator, 'get_45m_interval_start'):
+                    self.current_interval_start = self.macd_indicator.get_45m_interval_start(signal_timestamp)
+                else:
+                    day_start = signal_timestamp.replace(hour=0, minute=0, second=0, microsecond=0)
+                    minutes_from_start = (signal_timestamp - day_start).total_seconds() / 60
+                    interval_number = int(minutes_from_start // 45)
+                    self.current_interval_start = day_start + timedelta(minutes=interval_number * 45)
+
+            logger.info(f"🔄 Обновлен интервал на: {self.current_interval_start.strftime('%H:%M')}")
             return True
 
         return False
@@ -326,10 +376,15 @@ class MACDStrategy:
                 f"🎯 MACD сигнал #{self.total_signals_received}: {signal_type.upper()} ({crossover_type}) "
                 f"при цене {price} (TF: {timeframe})"
             )
-            logger.info(f"📊 Позиция: {self.position_state.value} | Алгоритм: {self.strategy_state.value} | Время: {current_time_msk} МСК")
+            logger.info(
+                f"📊 Позиция: {self.position_state.value} | Алгоритм: {self.strategy_state.value} | Время: {current_time_msk} МСК")
 
             # Проверяем новый ли это интервал
             is_new_interval = self._is_new_interval(signal_timestamp)
+
+            # Дополнительная проверка: принудительная проверка по времени
+            if not is_new_interval:
+                is_new_interval = self._check_interval_by_time(signal_timestamp)
 
             if is_new_interval:
                 await self._handle_new_interval()
