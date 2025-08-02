@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 from ..indicators.macd_5m import MACD5mIndicator
 from ..indicators.macd_45m import MACD45mIndicator
 from ..exchange.bybit import BybitClient
-from ..database.database import db
 from ..utils.config import config
 from ..utils.logger import logger
 from ..utils.helpers import get_msk_time, format_msk_time
@@ -28,7 +27,7 @@ class StrategyState(Enum):
 
 
 class MACDStrategy:
-    """Упрощенная MACD стратегия без привязки к пользователям"""
+    """MACD стратегия"""
 
     def __init__(self):
         self.strategy_name = "MACD Full (Interval Filter)"
@@ -132,9 +131,6 @@ class MACDStrategy:
             if not await self.initialize():
                 return False
 
-            # Отмечаем стратегию как активную в БД
-            db.set_strategy_active(self.strategy_name)
-
             self.start_time = get_msk_time()
             self.is_active = True
 
@@ -168,7 +164,6 @@ class MACDStrategy:
             logger.error(f"❌ Ошибка запуска MACD стратегии: {e}")
             self.error_message = str(e)
             self.is_active = False
-            db.set_strategy_inactive(f"Ошибка запуска: {str(e)}")
             return False
 
     async def stop(self, reason: str = "Manual stop") -> bool:
@@ -185,9 +180,6 @@ class MACDStrategy:
 
             self.is_active = False
 
-            # Обновляем статус в БД
-            db.set_strategy_inactive(reason)
-
             # Закрываем соединения
             await self._cleanup()
 
@@ -201,7 +193,6 @@ class MACDStrategy:
 
         except Exception as e:
             logger.error(f"❌ Ошибка остановки MACD стратегии: {e}")
-            db.set_strategy_inactive(f"Ошибка остановки: {str(e)}")
             return False
 
     async def _cleanup(self):
@@ -447,7 +438,6 @@ class MACDStrategy:
 
             if result['success']:
                 logger.info(f"✅ LONG позиция открыта: {result['order_id']}")
-                await self._record_trade_open('LONG', signal, result)
                 self.last_operation_time = get_msk_time()
                 return True
             else:
@@ -477,7 +467,6 @@ class MACDStrategy:
 
             if result['success']:
                 logger.info(f"✅ SHORT позиция открыта: {result['order_id']}")
-                await self._record_trade_open('SHORT', signal, result)
                 self.last_operation_time = get_msk_time()
                 return True
             else:
@@ -498,7 +487,6 @@ class MACDStrategy:
 
                 if result['success']:
                     logger.info(f"✅ {position_type} позиция закрыта")
-                    await self._record_trade_close(position_type, result)
                     self.last_operation_time = get_msk_time()
                     return True
                 else:
@@ -580,31 +568,6 @@ class MACDStrategy:
             logger.error(f"❌ Ошибка определения состояния позиции: {e}")
             self.position_state = PositionState.NO_POSITION
             self.strategy_state = StrategyState.WAITING_FIRST_SIGNAL
-
-    async def _record_trade_open(self, side: str, signal: Dict[str, Any], order_result: Dict[str, Any]):
-        """Запись открытия сделки"""
-        try:
-            quantity = order_result.get('qty', 'unknown')
-            if quantity == 'unknown':
-                current_size = await self._calculate_position_size()
-                quantity = current_size if current_size else 'unknown'
-
-            trade_id = db.create_trade_record(
-                symbol=self.symbol,
-                side=side,
-                quantity=str(quantity),
-                order_id=order_result.get('order_id')
-            )
-            logger.info(f"📝 Записана сделка: ID={trade_id}, {side}, размер: {quantity}")
-        except Exception as e:
-            logger.error(f"❌ Ошибка записи сделки: {e}")
-
-    async def _record_trade_close(self, side: str, close_result: Dict[str, Any]):
-        """Запись закрытия сделки"""
-        try:
-            logger.info(f"📝 Сделка {side} закрыта: {close_result.get('order_id')}")
-        except Exception as e:
-            logger.error(f"❌ Ошибка записи закрытия сделки: {e}")
 
     def get_status_info(self) -> Dict[str, Any]:
         """Получение информации о статусе стратегии"""
