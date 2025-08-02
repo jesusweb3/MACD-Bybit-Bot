@@ -1,62 +1,61 @@
 # src/strategy/strategy_manager.py
-from typing import Dict, Optional, Any
+from typing import Optional, Dict, Any
 from .macd import MACDStrategy
+from ..database.database import db
 from ..utils.logger import logger
+from ..utils.config import config
 
 
 class StrategyManager:
-    """Упрощенный менеджер для управления MACD стратегиями"""
+    """Упрощенный менеджер для управления одной MACD стратегией"""
 
     def __init__(self):
-        # Словарь активных стратегий: {telegram_id: MACDStrategy}
-        self.active_strategies: Dict[int, MACDStrategy] = {}
+        # Одна глобальная стратегия вместо множества
+        self.strategy: Optional[MACDStrategy] = None
 
-    async def start_strategy(self, telegram_id: int) -> Dict[str, Any]:
+    async def start_strategy(self) -> Dict[str, Any]:
         """
-        Запуск MACD стратегии для пользователя
-
-        Args:
-            telegram_id: ID пользователя Telegram
+        Запуск MACD стратегии
 
         Returns:
             Результат запуска стратегии
         """
         try:
-            # Проверяем что у пользователя нет активной стратегии
-            if telegram_id in self.active_strategies:
-                current_strategy = self.active_strategies[telegram_id]
+            # Проверяем что стратегия не запущена
+            if self.strategy is not None:
                 return {
                     'success': False,
-                    'error': f'У вас уже запущена стратегия {current_strategy.strategy_name}. Остановите ее перед запуском новой.'
+                    'error': f'Стратегия уже запущена: {self.strategy.strategy_name}'
                 }
 
-            logger.info(f"Запуск MACD стратегии (новая логика) для пользователя {telegram_id}")
+            logger.info(f"🚀 Запуск MACD стратегии")
 
             # Создаем экземпляр стратегии
-            strategy = MACDStrategy(telegram_id)
+            self.strategy = MACDStrategy()
 
             # Запускаем стратегию
-            start_success = await strategy.start()
+            start_success = await self.strategy.start()
 
             if start_success:
-                # Сохраняем в активные стратегии
-                self.active_strategies[telegram_id] = strategy
-
-                logger.info(f"✅ MACD стратегия (новая логика) успешно запущена для {telegram_id}")
-
-                # Добавляем сводку настроек в ответ
-                settings_summary = strategy.get_settings_summary()
+                logger.info(f"✅ MACD стратегия успешно запущена")
 
                 return {
                     'success': True,
-                    'strategy_name': strategy.strategy_name,
-                    'strategy_id': strategy.strategy_id,
-                    'message': f'Стратегия {strategy.strategy_name} успешно запущена!',
-                    'settings': settings_summary
+                    'strategy_name': self.strategy.strategy_name,
+                    'message': f'Стратегия {self.strategy.strategy_name} успешно запущена!',
+                    'config': {
+                        'symbol': config.trading_pair,
+                        'timeframe': config.timeframe,
+                        'leverage': config.leverage,
+                        'position_size': f"{config.position_size_usdt} USDT"
+                    }
                 }
             else:
-                error_msg = strategy.error_message or 'Неизвестная ошибка при запуске'
+                error_msg = self.strategy.error_message or 'Неизвестная ошибка при запуске'
                 logger.error(f"❌ Не удалось запустить MACD стратегию: {error_msg}")
+
+                # Очищаем стратегию при ошибке
+                self.strategy = None
 
                 return {
                     'success': False,
@@ -65,17 +64,20 @@ class StrategyManager:
 
         except Exception as e:
             logger.error(f"❌ Исключение при запуске MACD стратегии: {e}")
+
+            # Очищаем стратегию при ошибке
+            self.strategy = None
+
             return {
                 'success': False,
                 'error': f'Критическая ошибка: {str(e)}'
             }
 
-    async def stop_strategy(self, telegram_id: int, reason: str = "Manual stop") -> Dict[str, Any]:
+    async def stop_strategy(self, reason: str = "Manual stop") -> Dict[str, Any]:
         """
-        Остановка стратегии пользователя
+        Остановка стратегии
 
         Args:
-            telegram_id: ID пользователя Telegram
             reason: Причина остановки
 
         Returns:
@@ -83,25 +85,24 @@ class StrategyManager:
         """
         try:
             # Проверяем есть ли активная стратегия
-            if telegram_id not in self.active_strategies:
+            if self.strategy is None:
                 return {
                     'success': False,
-                    'error': 'У вас нет активной стратегии'
+                    'error': 'Нет активной стратегии для остановки'
                 }
 
-            strategy = self.active_strategies[telegram_id]
-            strategy_name = strategy.strategy_name
+            strategy_name = self.strategy.strategy_name
 
-            logger.info(f"Остановка стратегии {strategy_name} для пользователя {telegram_id}: {reason}")
+            logger.info(f"⏹️ Остановка стратегии {strategy_name}: {reason}")
 
             # Останавливаем стратегию
-            stop_success = await strategy.stop(reason)
+            stop_success = await self.strategy.stop(reason)
 
-            # Удаляем из активных стратегий
-            del self.active_strategies[telegram_id]
+            # Удаляем стратегию из памяти
+            self.strategy = None
 
             if stop_success:
-                logger.info(f"✅ Стратегия {strategy_name} успешно остановлена для {telegram_id}")
+                logger.info(f"✅ Стратегия {strategy_name} успешно остановлена")
 
                 return {
                     'success': True,
@@ -120,12 +121,9 @@ class StrategyManager:
         except Exception as e:
             logger.error(f"❌ Исключение при остановке стратегии: {e}")
 
-            # Все равно удаляем из активных стратегий
-            if telegram_id in self.active_strategies:
-                strategy_name = self.active_strategies[telegram_id].strategy_name
-                del self.active_strategies[telegram_id]
-            else:
-                strategy_name = "неизвестная"
+            # Все равно удаляем стратегию из памяти
+            strategy_name = self.strategy.strategy_name if self.strategy else "неизвестная"
+            self.strategy = None
 
             return {
                 'success': False,
@@ -133,92 +131,146 @@ class StrategyManager:
                 'error': f'Ошибка остановки: {str(e)}'
             }
 
-    def get_active_strategy(self, telegram_id: int) -> Optional[MACDStrategy]:
-        """Получение активной стратегии пользователя"""
-        return self.active_strategies.get(telegram_id)
+    def get_strategy(self) -> Optional[MACDStrategy]:
+        """Получение активной стратегии"""
+        return self.strategy
 
-    def is_strategy_active(self, telegram_id: int) -> bool:
-        """Проверка активности стратегии у пользователя"""
-        return telegram_id in self.active_strategies
+    def is_strategy_active(self) -> bool:
+        """Проверка активности стратегии"""
+        return self.strategy is not None and self.strategy.is_active
 
-    def get_strategy_status(self, telegram_id: int) -> Dict[str, Any]:
-        """Получение статуса стратегии пользователя"""
-        if telegram_id not in self.active_strategies:
+    def get_strategy_status(self) -> Dict[str, Any]:
+        """Получение статуса стратегии"""
+        if self.strategy is None:
+            # Проверяем БД на случай если стратегия была запущена в прошлой сессии
+            db_status = db.get_strategy_status()
             return {
                 'is_active': False,
-                'strategy_name': None,
-                'status': 'not_running'
+                'strategy_name': db_status.get('strategy_name'),
+                'status': 'not_running',
+                'in_memory': False,
+                'last_db_status': db_status
             }
 
-        strategy = self.active_strategies[telegram_id]
-        status_info = strategy.get_status_info()
-
-        # Добавляем сводку настроек
-        settings_summary = strategy.get_settings_summary()
-        status_info['settings'] = settings_summary
-        status_info['is_active'] = True
+        # Получаем статус из активной стратегии
+        status_info = self.strategy.get_status_info()
+        status_info['in_memory'] = True
 
         return status_info
 
-    def get_active_strategies_count(self) -> int:
-        """Получение количества активных стратегий"""
-        return len(self.active_strategies)
+    async def restart_strategy(self, reason: str = "Restart requested") -> Dict[str, Any]:
+        """Перезапуск стратегии"""
+        logger.info(f"🔄 Перезапуск стратегии: {reason}")
 
-    def get_all_active_strategies(self) -> Dict[int, Dict[str, Any]]:
-        """Получение всех активных стратегий"""
-        result = {}
-        for telegram_id, strategy in self.active_strategies.items():
-            status_info = strategy.get_status_info()
-            settings_summary = strategy.get_settings_summary()
-            status_info['settings'] = settings_summary
-            result[telegram_id] = status_info
+        # Сначала останавливаем если запущена
+        if self.is_strategy_active():
+            stop_result = await self.stop_strategy(f"Restart: {reason}")
+            if not stop_result['success']:
+                return {
+                    'success': False,
+                    'error': f"Не удалось остановить для перезапуска: {stop_result['error']}"
+                }
 
-        return result
+        # Затем запускаем
+        start_result = await self.start_strategy()
+        if start_result['success']:
+            start_result['message'] = f"Стратегия перезапущена: {reason}"
 
-    async def stop_all_strategies(self, reason: str = "System shutdown") -> Dict[str, Any]:
-        """Остановка всех активных стратегий"""
-        logger.info(f"Остановка всех активных стратегий: {reason}")
+        return start_result
 
-        stopped_count = 0
-        error_count = 0
+    def get_statistics(self) -> Dict[str, Any]:
+        """Получение статистики"""
+        # Статистика из БД
+        db_stats = db.get_statistics()
 
-        # Копируем список telegram_id, чтобы избежать изменения словаря во время итерации
-        telegram_ids = list(self.active_strategies.keys())
-
-        for telegram_id in telegram_ids:
-            try:
-                result = await self.stop_strategy(telegram_id, reason)
-                if result['success']:
-                    stopped_count += 1
-                else:
-                    error_count += 1
-                    logger.error(f"Ошибка остановки стратегии для {telegram_id}: {result.get('error')}")
-            except Exception as e:
-                error_count += 1
-                logger.error(f"Исключение при остановке стратегии для {telegram_id}: {e}")
-
-        logger.info(f"Остановлено стратегий: {stopped_count}, ошибок: {error_count}")
+        # Статистика активной стратегии
+        strategy_stats = {}
+        if self.strategy:
+            strategy_info = self.strategy.get_status_info()
+            strategy_stats = {
+                'signals_received': strategy_info.get('total_signals_received', 0),
+                'signals_processed': strategy_info.get('signals_processed', 0),
+                'position_state': strategy_info.get('position_state'),
+                'strategy_state': strategy_info.get('strategy_state'),
+                'last_signal_time': strategy_info.get('last_signal_time')
+            }
 
         return {
-            'stopped_count': stopped_count,
-            'error_count': error_count,
-            'total_processed': len(telegram_ids)
+            'database_stats': db_stats,
+            'strategy_stats': strategy_stats,
+            'is_active': self.is_strategy_active(),
+            'config': {
+                'symbol': config.trading_pair,
+                'timeframe': config.timeframe,
+                'leverage': config.leverage,
+                'position_size': f"{config.position_size_usdt} USDT"
+            }
         }
 
-    def cleanup_inactive_strategies(self):
-        """Очистка неактивных стратегий из памяти"""
-        inactive_telegram_ids = []
+    def print_status(self):
+        """Вывод статуса в консоль"""
+        print("\n" + "=" * 70)
+        print("СТАТУС МЕНЕДЖЕРА СТРАТЕГИЙ")
+        print("=" * 70)
 
-        for telegram_id, strategy in self.active_strategies.items():
-            if not strategy.is_active:
-                inactive_telegram_ids.append(telegram_id)
+        # Статус стратегии
+        if self.strategy:
+            print(f"Активная стратегия: 🟢 {self.strategy.strategy_name}")
+            self.strategy.print_status()
+        else:
+            print("Активная стратегия: 🔴 Нет")
 
-        for telegram_id in inactive_telegram_ids:
-            logger.info(f"Удаляем неактивную стратегию для пользователя {telegram_id}")
-            del self.active_strategies[telegram_id]
+            # Проверяем последний статус в БД
+            db_status = db.get_strategy_status()
+            if db_status:
+                print(f"Последняя в БД: {db_status.get('strategy_name', 'N/A')}")
+                print(f"Статус в БД: {'Активна' if db_status.get('is_active') else 'Остановлена'}")
 
-        if inactive_telegram_ids:
-            logger.info(f"Очищено {len(inactive_telegram_ids)} неактивных стратегий")
+        # Общая статистика
+        stats = self.get_statistics()
+        db_stats = stats['database_stats']
+
+        print("\n📊 ОБЩАЯ СТАТИСТИКА:")
+        print(f"Всего сделок: {db_stats.get('total_trades', 0)}")
+        print(f"Открытых сделок: {db_stats.get('closed_trades', 0)}")
+        print(f"Общий P&L: {db_stats.get('total_pnl', 0):.2f} USDT")
+        print(f"Винрейт: {db_stats.get('win_rate', 0):.1f}%")
+
+        # Конфигурация
+        config_info = stats['config']
+        print(f"\n⚙️ КОНФИГУРАЦИЯ:")
+        print(f"Символ: {config_info['symbol']}")
+        print(f"Таймфрейм: {config_info['timeframe']}")
+        print(f"Плечо: {config_info['leverage']}x")
+        print(f"Размер позиции: {config_info['position_size']}")
+
+        print("=" * 70)
+
+    async def cleanup_and_sync_with_db(self):
+        """Очистка памяти и синхронизация с БД"""
+        try:
+            # Проверяем статус в БД
+            db_status = db.get_strategy_status()
+
+            if self.strategy is None and db_status.get('is_active'):
+                # В БД стратегия помечена как активная, но в памяти её нет
+                logger.warning("⚠️ Обнаружено рассинхронизация: БД показывает активную стратегию, но в памяти её нет")
+                db.set_strategy_inactive("Cleanup: strategy not in memory")
+
+            elif self.strategy is not None and not db_status.get('is_active'):
+                # В памяти есть стратегия, но в БД она не активна
+                logger.warning("⚠️ Обнаружено рассинхронизация: стратегия в памяти, но БД показывает неактивную")
+                if self.strategy.is_active:
+                    db.set_strategy_active(self.strategy.strategy_name)
+                else:
+                    # Стратегия в памяти но неактивна - удаляем
+                    logger.info("🧹 Удаляем неактивную стратегию из памяти")
+                    self.strategy = None
+
+            logger.info("✅ Синхронизация с БД завершена")
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка синхронизации с БД: {e}")
 
 
 # Глобальный экземпляр менеджера стратегий
