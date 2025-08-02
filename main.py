@@ -6,8 +6,6 @@ from src.utils.config import config
 from src.utils.logger import logger
 from src.utils.helpers import format_msk_time
 from src.database.database import db
-
-# Импорты обработчиков
 from src.bot.handlers.start import start
 from src.bot.handlers.settings import settings
 from src.bot.handlers.trade import trade

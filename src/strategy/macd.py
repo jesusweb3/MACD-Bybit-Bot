@@ -1,9 +1,10 @@
 # src/strategy/macd.py
 import asyncio
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 from enum import Enum
 from datetime import datetime
-from ..indicators.macd import MACDIndicator
+from ..indicators.macd_5m import MACD5mIndicator
+from ..indicators.macd_45m import MACD45mIndicator
 from ..exchange.bybit import BybitClient
 from ..database.database import db
 from ..utils.logger import logger
@@ -17,17 +18,26 @@ class PositionState(Enum):
     SHORT_POSITION = "short_position"
 
 
+class StrategyState(Enum):
+    """Состояние алгоритма торговли"""
+    WAITING_FIRST_SIGNAL = "waiting_first_signal"  # Ждем первое пересечение в интервале
+    POSITION_OPENED = "position_opened"  # Позиция открыта, ждем закрытия интервала
+    CHECKING_CONFIRMATION = "checking_confirmation"  # Проверяем подтверждение на закрытии интервала
+    WAITING_REVERSE_SIGNAL = "waiting_reverse_signal"  # Ждем обратного пересечения
+
+
 class MACDStrategy:
 
     def __init__(self, telegram_id: int):
         self.telegram_id = telegram_id
-        self.strategy_name = "MACD Full (Real-time)"
+        self.strategy_name = "MACD Full (Interval Filter)"
         self.position_state = PositionState.NO_POSITION
+        self.strategy_state = StrategyState.WAITING_FIRST_SIGNAL
         self.is_active = False
 
         # Компоненты стратегии
         self.bybit_client: Optional[BybitClient] = None
-        self.macd_indicator: Optional[MACDIndicator] = None
+        self.macd_indicator: Optional[Union[MACD5mIndicator, MACD45mIndicator]] = None
 
         # Настройки пользователя и торговые параметры
         self.user_settings: Optional[Dict[str, Any]] = None
@@ -44,19 +54,25 @@ class MACDStrategy:
         self.start_time: Optional[datetime] = None
         self.error_message: Optional[str] = None
 
-        # Счетчики для real-time режима
+        # Счетчики для режима
         self.total_signals_received = 0
         self.signals_processed = 0
         self.last_signal_time: Optional[datetime] = None
 
-        # Защита от слишком частых сигналов (debounce)
-        self.min_signal_interval_seconds = 10  # Минимум 10 секунд между сигналами
-        self.last_processed_signal_time: Optional[datetime] = None
+        # НОВАЯ ЛОГИКА: Отслеживание интервалов и пересечений
+        self.current_interval_start: Optional[datetime] = None
+        self.first_signal_in_interval: Optional[Dict[str, Any]] = None
+        self.last_interval_macd_state: Optional[Dict[str, Any]] = None  # Состояние MACD на закрытии интервала
+        self.signals_blocked_until_interval_close = False
+
+        # Защита от слишком частых операций
+        self.min_operation_interval_seconds = 5  # Минимум 5 секунд между операциями
+        self.last_operation_time: Optional[datetime] = None
 
     async def initialize(self) -> bool:
         """Инициализация стратегии"""
         try:
-            logger.info(f"🔧 Инициализация MACD стратегии для пользователя {self.telegram_id}")
+            logger.info(f"🔧 Инициализация MACD стратегии (новая логика) для пользователя {self.telegram_id}")
 
             # Получаем пользователя и настройки
             user = db.get_or_create_user(self.telegram_id)
@@ -73,6 +89,8 @@ class MACDStrategy:
             # Извлекаем основные параметры
             self.symbol = self.user_settings.get('trading_pair')
             self.timeframe = self.user_settings.get('timeframe')
+
+            logger.info(f"🎯 Выбранный таймфрейм: {self.timeframe}")
 
             # Инициализируем Bybit клиент
             api_key = self.user_settings.get('bybit_api_key')
@@ -102,11 +120,15 @@ class MACDStrategy:
 
             logger.info(f"✅ Тестовый размер позиции: {test_position_size}")
 
-            # Инициализируем MACD индикатор
-            self.macd_indicator = MACDIndicator(
-                symbol=self.symbol,
-                timeframe=self.timeframe
-            )
+            # Инициализируем правильный MACD индикатор
+            if self.timeframe == '5m':
+                logger.info("🔧 Инициализация MACD 5m индикатора")
+                self.macd_indicator = MACD5mIndicator(symbol=self.symbol, limit=200)
+            elif self.timeframe == '45m':
+                logger.info("🔧 Инициализация MACD 45m индикатора")
+                self.macd_indicator = MACD45mIndicator(symbol=self.symbol, limit=200)
+            else:
+                raise Exception(f"Неподдерживаемый таймфрейм: {self.timeframe}")
 
             logger.info(f"✅ MACD стратегия инициализирована: {self.symbol} {self.timeframe}")
             return True
@@ -175,7 +197,14 @@ class MACDStrategy:
             self.start_time = get_msk_time()
             self.is_active = True
 
-            logger.info(f"🚀 Запуск MACD стратегии (ID: {self.strategy_id})")
+            # Сбрасываем состояние стратегии
+            self.strategy_state = StrategyState.WAITING_FIRST_SIGNAL
+            self.current_interval_start = None
+            self.first_signal_in_interval = None
+            self.last_interval_macd_state = None
+            self.signals_blocked_until_interval_close = False
+
+            logger.info(f"🚀 Запуск MACD стратегии (новая логика) (ID: {self.strategy_id})")
 
             # Добавляем callback для MACD сигналов
             self.macd_indicator.add_callback(self._handle_macd_signal)
@@ -188,7 +217,10 @@ class MACDStrategy:
 
             logger.info(f"✅ MACD стратегия запущена: {self.symbol} {self.timeframe}")
             logger.info(f"📊 Состояние позиции: {self.position_state.value}")
+            logger.info(f"🎯 Состояние алгоритма: {self.strategy_state.value}")
             logger.info(f"💹 Размер позиции: динамический расчет перед каждой сделкой")
+            logger.info(f"🔧 Движок: {'MACD 5m' if self.timeframe == '5m' else 'MACD 45m'}")
+            logger.info(f"🔄 Логика: Фильтрация по интервалам с подтверждением")
 
             return True
 
@@ -204,7 +236,7 @@ class MACDStrategy:
             if not self.is_active:
                 return True
 
-            logger.info(f"⏹️ Остановка MACD стратегии: {reason}")
+            logger.info(f"⏹️ Остановка MACD стратегии (новая логика): {reason}")
 
             # Останавливаем MACD индикатор
             if self.macd_indicator:
@@ -221,7 +253,8 @@ class MACDStrategy:
 
             # Логируем статистику
             logger.info(
-                f"📊 Статистика: получено {self.total_signals_received} сигналов, обработано {self.signals_processed}")
+                f"📊 Статистика: получено {self.total_signals_received} сигналов, обработано {self.signals_processed}"
+            )
             logger.info(f"✅ MACD стратегия остановлена")
 
             return True
@@ -234,14 +267,45 @@ class MACDStrategy:
         """Очистка ресурсов"""
         try:
             if self.macd_indicator:
-                await self.macd_indicator.close()
+                # Новые индикаторы не требуют отдельного закрытия
                 self.macd_indicator = None
 
         except Exception as e:
             logger.error(f"❌ Ошибка очистки ресурсов: {e}")
 
+    def _is_new_interval(self, signal_timestamp: datetime) -> bool:
+        """Проверка начала нового интервала"""
+        if self.timeframe == '5m':
+            # Для 5m интервал меняется каждые 5 минут (00, 05, 10, 15, ...)
+            current_interval_minute = (signal_timestamp.minute // 5) * 5
+            current_interval_start = signal_timestamp.replace(minute=current_interval_minute, second=0, microsecond=0)
+        elif self.timeframe == '45m':
+            # Для 45m используем логику из индикатора
+            if hasattr(self.macd_indicator, 'get_45m_interval_start'):
+                current_interval_start = self.macd_indicator.get_45m_interval_start(signal_timestamp)
+            else:
+                # Fallback
+                interval_number = signal_timestamp.hour * 60 + signal_timestamp.minute
+                interval_start_minutes = (interval_number // 45) * 45
+                current_interval_start = signal_timestamp.replace(
+                    hour=interval_start_minutes // 60,
+                    minute=interval_start_minutes % 60,
+                    second=0,
+                    microsecond=0
+                )
+        else:
+            return False
+
+        # Проверяем изменился ли интервал
+        if self.current_interval_start != current_interval_start:
+            logger.info(f"🔄 Новый {self.timeframe} интервал: {current_interval_start.strftime('%H:%M')} (было: {self.current_interval_start.strftime('%H:%M') if self.current_interval_start else 'None'})")
+            self.current_interval_start = current_interval_start
+            return True
+
+        return False
+
     async def _handle_macd_signal(self, signal: Dict[str, Any]):
-        """Обработка сигналов MACD с защитой от частых срабатываний"""
+        """НОВАЯ ЛОГИКА: Обработка сигналов с фильтрацией по интервалам"""
         try:
             if not self.is_active:
                 logger.warning("⚠️ Получен сигнал, но стратегия неактивна")
@@ -255,83 +319,192 @@ class MACDStrategy:
             price = signal.get('price')
             crossover_type = signal.get('crossover_type')
             timeframe = signal.get('timeframe')
+            signal_timestamp = signal.get('timestamp')
 
             current_time_msk = format_msk_time()
             logger.info(
-                f"🎯 MACD сигнал #{self.total_signals_received}: {signal_type.upper()} ({crossover_type}) при цене {price}")
-            logger.info(f"📊 Текущее состояние: {self.position_state.value} | Время: {current_time_msk} МСК")
+                f"🎯 MACD сигнал #{self.total_signals_received}: {signal_type.upper()} ({crossover_type}) "
+                f"при цене {price} (TF: {timeframe})"
+            )
+            logger.info(f"📊 Позиция: {self.position_state.value} | Алгоритм: {self.strategy_state.value} | Время: {current_time_msk} МСК")
 
-            # Проверяем debounce (защита от слишком частых сигналов)
-            if self.last_processed_signal_time:
-                time_since_last = (get_msk_time() - self.last_processed_signal_time).total_seconds()
-                if time_since_last < self.min_signal_interval_seconds:
+            # Проверяем новый ли это интервал
+            is_new_interval = self._is_new_interval(signal_timestamp)
+
+            if is_new_interval:
+                await self._handle_new_interval()
+
+            # Проверяем защиту от частых операций
+            if self.last_operation_time:
+                time_since_last = (get_msk_time() - self.last_operation_time).total_seconds()
+                if time_since_last < self.min_operation_interval_seconds:
                     logger.warning(
-                        f"⚠️ Сигнал проигнорирован (debounce): {time_since_last:.1f}с < {self.min_signal_interval_seconds}с")
+                        f"⚠️ Операция проигнорирована (защита): {time_since_last:.1f}с < {self.min_operation_interval_seconds}с"
+                    )
                     return
 
-            # Обрабатываем сигнал
-            if signal_type == 'buy':  # Бычье пересечение
-                await self._handle_bullish_signal(signal)
-            elif signal_type == 'sell':  # Медвежье пересечение
-                await self._handle_bearish_signal(signal)
+            # Обрабатываем сигнал в зависимости от состояния стратегии
+            if self.strategy_state == StrategyState.WAITING_FIRST_SIGNAL:
+                await self._handle_first_signal_in_interval(signal)
+            elif self.strategy_state == StrategyState.WAITING_REVERSE_SIGNAL:
+                await self._handle_reverse_signal(signal)
             else:
-                logger.warning(f"⚠️ Неизвестный тип сигнала: {signal_type}")
-                return
+                # В состояниях POSITION_OPENED и CHECKING_CONFIRMATION игнорируем сигналы
+                logger.info(f"🔒 Сигнал проигнорирован: состояние {self.strategy_state.value}")
 
-            # Обновляем время последней обработки
-            self.last_processed_signal_time = get_msk_time()
             self.signals_processed += 1
-
-            logger.info(f"✅ Сигнал #{self.signals_processed} обработан успешно")
+            logger.info(f"✅ Сигнал #{self.signals_processed} обработан")
 
         except Exception as e:
             logger.error(f"❌ Ошибка обработки MACD сигнала: {e}")
 
-    async def _handle_bullish_signal(self, signal: Dict[str, Any]):
-        """Обработка бычьего сигнала - переход в лонг"""
-        logger.info("🟢 Бычий сигнал: переход в LONG позицию")
+    async def _handle_new_interval(self):
+        """Обработка начала нового интервала"""
+        logger.info(f"🆕 Начат новый {self.timeframe} интервал")
 
-        # Закрываем шорт если есть
-        if self.position_state == PositionState.SHORT_POSITION:
-            logger.info("📉 Закрываем SHORT позицию")
-            close_success = await self._close_position_with_retry("SHORT")
-            if not close_success:
-                logger.warning("⚠️ Не удалось закрыть SHORT, пропускаем открытие LONG")
-                return
+        # Если была позиция и ждали закрытия интервала - проверяем подтверждение
+        if self.strategy_state == StrategyState.POSITION_OPENED:
+            await self._check_signal_confirmation()
 
-        # Открываем лонг
-        logger.info("📈 Открываем LONG позицию")
-        open_success = await self._open_long_position(signal)
+        # Сбрасываем блокировку сигналов и первый сигнал
+        self.signals_blocked_until_interval_close = False
+        self.first_signal_in_interval = None
 
-        if open_success:
-            self.position_state = PositionState.LONG_POSITION
-            logger.info("✅ Успешно перешли в LONG позицию")
+        # Переходим в ожидание первого сигнала если нет позиции
+        if self.position_state == PositionState.NO_POSITION:
+            self.strategy_state = StrategyState.WAITING_FIRST_SIGNAL
+            logger.info("🎯 Состояние: Ожидание первого сигнала в новом интервале")
+
+    async def _handle_first_signal_in_interval(self, signal: Dict[str, Any]):
+        """Обработка первого сигнала в интервале"""
+        logger.info("🥇 Первый сигнал в интервале - открываем позицию")
+
+        # Сохраняем первый сигнал
+        self.first_signal_in_interval = signal.copy()
+
+        # Открываем позицию
+        if signal['type'] == 'buy':
+            success = await self._open_long_position(signal)
+            if success:
+                self.position_state = PositionState.LONG_POSITION
         else:
-            logger.warning("⚠️ Не удалось открыть LONG позицию")
-            self.position_state = PositionState.NO_POSITION
+            success = await self._open_short_position(signal)
+            if success:
+                self.position_state = PositionState.SHORT_POSITION
 
-    async def _handle_bearish_signal(self, signal: Dict[str, Any]):
-        """Обработка медвежьего сигнала - переход в шорт"""
-        logger.info("🔴 Медвежий сигнал: переход в SHORT позицию")
+        if success:
+            # Переходим в состояние "позиция открыта, ждем закрытия интервала"
+            self.strategy_state = StrategyState.POSITION_OPENED
+            self.signals_blocked_until_interval_close = True
+            logger.info("🔒 Позиция открыта, сигналы заблокированы до закрытия интервала")
 
-        # Закрываем лонг если есть
+    async def _handle_reverse_signal(self, signal: Dict[str, Any]):
+        """Обработка обратного сигнала (когда ждем разворот)"""
+        if not self.first_signal_in_interval:
+            logger.warning("⚠️ Нет сохраненного первого сигнала для сравнения")
+            return
+
+        # Проверяем что это действительно обратный сигнал
+        first_signal_type = self.first_signal_in_interval['type']
+        current_signal_type = signal['type']
+
+        if first_signal_type != current_signal_type:
+            logger.info(f"🔄 Обратный сигнал получен: {first_signal_type} -> {current_signal_type}")
+
+            # Закрываем текущую позицию и открываем противоположную
+            if self.position_state == PositionState.LONG_POSITION:
+                await self._close_position_with_retry("LONG")
+                success = await self._open_short_position(signal)
+                if success:
+                    self.position_state = PositionState.SHORT_POSITION
+            elif self.position_state == PositionState.SHORT_POSITION:
+                await self._close_position_with_retry("SHORT")
+                success = await self._open_long_position(signal)
+                if success:
+                    self.position_state = PositionState.LONG_POSITION
+
+            if success:
+                # Обновляем первый сигнал и переходим в ожидание закрытия интервала
+                self.first_signal_in_interval = signal.copy()
+                self.strategy_state = StrategyState.POSITION_OPENED
+                self.signals_blocked_until_interval_close = True
+                logger.info("✅ Позиция развернута, ждем закрытия интервала")
+        else:
+            logger.info(f"🔄 Сигнал в том же направлении, игнорируем")
+
+    async def _check_signal_confirmation(self):
+        """Проверка подтверждения сигнала на закрытии интервала"""
+        if not self.first_signal_in_interval:
+            logger.warning("⚠️ Нет сигнала для проверки подтверждения")
+            return
+
+        # Получаем текущее состояние MACD
+        current_macd_values = self.macd_indicator.get_current_macd_values()
+        if not current_macd_values:
+            logger.warning("⚠️ Не удалось получить текущие значения MACD")
+            return
+
+        current_macd = current_macd_values['macd_line']
+        current_signal_line = current_macd_values['signal_line']
+        first_signal_type = self.first_signal_in_interval['type']
+
+        # Проверяем сохранилось ли пересечение
+        if first_signal_type == 'buy':
+            # Для бычьего сигнала MACD должна быть выше signal
+            is_confirmed = current_macd > current_signal_line
+        else:
+            # Для медвежьего сигнала MACD должна быть ниже signal
+            is_confirmed = current_macd < current_signal_line
+
+        logger.info(
+            f"🔍 Проверка подтверждения {first_signal_type} сигнала: "
+            f"MACD={current_macd:.6f}, Signal={current_signal_line:.6f}, "
+            f"Подтверждено: {'ДА' if is_confirmed else 'НЕТ'}"
+        )
+
+        if is_confirmed:
+            # Сигнал подтвержден - ждем обратного пересечения
+            self.strategy_state = StrategyState.WAITING_REVERSE_SIGNAL
+            logger.info("✅ Сигнал подтвержден, ждем обратного пересечения")
+        else:
+            # Сигнал не подтвержден - разворачиваем позицию
+            logger.info("❌ Сигнал НЕ подтвержден, разворачиваем позицию")
+            await self._reverse_position()
+
+    async def _reverse_position(self):
+        """Разворот позиции при неподтвержденном сигнале"""
         if self.position_state == PositionState.LONG_POSITION:
-            logger.info("📈 Закрываем LONG позицию")
-            close_success = await self._close_position_with_retry("LONG")
-            if not close_success:
-                logger.warning("⚠️ Не удалось закрыть LONG, пропускаем открытие SHORT")
-                return
+            logger.info("🔄 Разворот: LONG -> SHORT")
+            await self._close_position_with_retry("LONG")
+            # Создаем фиктивный сигнал для открытия SHORT
+            reverse_signal = {
+                'type': 'sell',
+                'price': self.macd_indicator.get_current_macd_values()['price'],
+                'timestamp': get_msk_time()
+            }
+            success = await self._open_short_position(reverse_signal)
+            if success:
+                self.position_state = PositionState.SHORT_POSITION
+                self.first_signal_in_interval = reverse_signal.copy()
 
-        # Открываем шорт
-        logger.info("📉 Открываем SHORT позицию")
-        open_success = await self._open_short_position(signal)
+        elif self.position_state == PositionState.SHORT_POSITION:
+            logger.info("🔄 Разворот: SHORT -> LONG")
+            await self._close_position_with_retry("SHORT")
+            # Создаем фиктивный сигнал для открытия LONG
+            reverse_signal = {
+                'type': 'buy',
+                'price': self.macd_indicator.get_current_macd_values()['price'],
+                'timestamp': get_msk_time()
+            }
+            success = await self._open_long_position(reverse_signal)
+            if success:
+                self.position_state = PositionState.LONG_POSITION
+                self.first_signal_in_interval = reverse_signal.copy()
 
-        if open_success:
-            self.position_state = PositionState.SHORT_POSITION
-            logger.info("✅ Успешно перешли в SHORT позицию")
-        else:
-            logger.warning("⚠️ Не удалось открыть SHORT позицию")
-            self.position_state = PositionState.NO_POSITION
+        # Переходим в ожидание закрытия интервала для проверки нового сигнала
+        self.strategy_state = StrategyState.POSITION_OPENED
+        self.signals_blocked_until_interval_close = True
+        logger.info("🔒 Позиция развернута, ждем закрытия интервала для проверки")
 
     async def _close_position_with_retry(self, position_type: str) -> bool:
         """Закрытие позиции с повторными попытками"""
@@ -343,6 +516,7 @@ class MACDStrategy:
                 if result['success']:
                     logger.info(f"✅ {position_type} позиция закрыта")
                     await self._record_trade_close(position_type, result)
+                    self.last_operation_time = get_msk_time()
                     return True
                 else:
                     error_msg = result.get('error', 'Unknown error')
@@ -383,6 +557,7 @@ class MACDStrategy:
             if result['success']:
                 logger.info(f"✅ LONG позиция открыта: {result['order_id']}")
                 await self._record_trade_open('LONG', signal, result)
+                self.last_operation_time = get_msk_time()
                 return True
             else:
                 error_msg = result.get('error', 'Unknown error')
@@ -413,6 +588,7 @@ class MACDStrategy:
             if result['success']:
                 logger.info(f"✅ SHORT позиция открыта: {result['order_id']}")
                 await self._record_trade_open('SHORT', signal, result)
+                self.last_operation_time = get_msk_time()
                 return True
             else:
                 error_msg = result.get('error', 'Unknown error')
@@ -485,17 +661,21 @@ class MACDStrategy:
 
                 if side == 'Buy':
                     self.position_state = PositionState.LONG_POSITION
+                    self.strategy_state = StrategyState.WAITING_REVERSE_SIGNAL  # Ждем обратного сигнала
                     logger.info(f"📈 Обнаружена LONG позиция: {size}")
                 elif side == 'Sell':
                     self.position_state = PositionState.SHORT_POSITION
+                    self.strategy_state = StrategyState.WAITING_REVERSE_SIGNAL  # Ждем обратного сигнала
                     logger.info(f"📉 Обнаружена SHORT позиция: {size}")
             else:
                 self.position_state = PositionState.NO_POSITION
+                self.strategy_state = StrategyState.WAITING_FIRST_SIGNAL
                 logger.info("📊 Открытых позиций нет")
 
         except Exception as e:
             logger.error(f"❌ Ошибка определения состояния позиции: {e}")
             self.position_state = PositionState.NO_POSITION
+            self.strategy_state = StrategyState.WAITING_FIRST_SIGNAL
 
     async def _record_trade_open(self, side: str, signal: Dict[str, Any], order_result: Dict[str, Any]):
         """Запись открытия сделки в историю"""
@@ -532,6 +712,7 @@ class MACDStrategy:
             'strategy_name': self.strategy_name,
             'is_active': self.is_active,
             'position_state': self.position_state.value,
+            'strategy_state': self.strategy_state.value,
             'symbol': self.symbol,
             'timeframe': self.timeframe,
             'position_size': 'dynamic',
@@ -543,7 +724,10 @@ class MACDStrategy:
             'total_signals_received': self.total_signals_received,
             'signals_processed': self.signals_processed,
             'last_signal_time': self.last_signal_time.isoformat() if self.last_signal_time else None,
-            'min_signal_interval_seconds': self.min_signal_interval_seconds
+            'current_interval_start': self.current_interval_start.isoformat() if self.current_interval_start else None,
+            'signals_blocked': self.signals_blocked_until_interval_close,
+            'first_signal_in_interval': self.first_signal_in_interval,
+            'indicator_engine': f'MACD {self.timeframe}' if self.timeframe else 'Unknown'
         }
 
     def get_settings_summary(self) -> Dict[str, Any]:
@@ -558,5 +742,7 @@ class MACDStrategy:
             'leverage': self.user_settings.get('leverage'),
             'timeframe': self.timeframe,
             'position_size': position_size_info.get('display', '—'),
-            'mode': 'Real-time динамический расчет размера'
+            'mode': f'Фильтрация по интервалам MACD {self.timeframe}',
+            'engine': f'python-binance + {"Direct 5m" if self.timeframe == "5m" else "15m->45m conversion"}',
+            'logic': 'Первый сигнал + подтверждение на закрытии интервала'
         }

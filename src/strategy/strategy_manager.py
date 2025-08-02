@@ -30,7 +30,7 @@ class StrategyManager:
                     'error': f'У вас уже запущена стратегия {current_strategy.strategy_name}. Остановите ее перед запуском новой.'
                 }
 
-            logger.info(f"Запуск MACD стратегии для пользователя {telegram_id}")
+            logger.info(f"Запуск MACD стратегии (новая логика) для пользователя {telegram_id}")
 
             # Создаем экземпляр стратегии
             strategy = MACDStrategy(telegram_id)
@@ -42,7 +42,7 @@ class StrategyManager:
                 # Сохраняем в активные стратегии
                 self.active_strategies[telegram_id] = strategy
 
-                logger.info(f"✅ MACD стратегия успешно запущена для {telegram_id}")
+                logger.info(f"✅ MACD стратегия (новая логика) успешно запущена для {telegram_id}")
 
                 # Добавляем сводку настроек в ответ
                 settings_summary = strategy.get_settings_summary()
